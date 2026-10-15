@@ -15,6 +15,7 @@
 package atepg
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -373,8 +374,9 @@ func TestDrainEmptyWorker_AllocationAndUnknown(t *testing.T) {
 // Unknown allocation fields are persisted future resource dimensions, not an
 // empty reservation. Nil remains the canonical zero-allocation representation.
 func TestDrainEmptyWorker_UnknownNestedAllocation(t *testing.T) {
-	for _, unknown := range []bool{true, false} {
-		t.Run(fmt.Sprint("unknown-resources-", unknown), func(t *testing.T) {
+	for _, fixture := range []string{"true", "false", "empty"} {
+		t.Run("unknown-resources-"+fixture, func(t *testing.T) {
+			unknown := fixture == "true"
 			p := setupPostgresPersistence(t)
 			ctx := context.Background()
 			createTestAtespace(t, p, "unknown-allocation-team")
@@ -383,43 +385,87 @@ func TestDrainEmptyWorker_UnknownNestedAllocation(t *testing.T) {
 				t.Fatal(err)
 			}
 			var allocated *ateapipb.WorkerResources
+			if fixture == "empty" {
+				allocated = &ateapipb.WorkerResources{Resources: &ateapipb.Resources{}}
+			}
+			unknownBytes := []byte{0xa0, 0x06, 0x01}
 			if unknown {
 				allocationResources := &ateapipb.Resources{}
 				// Field 100, varint 1: a future dimension unknown to this server.
-				allocationResources.ProtoReflect().SetUnknown([]byte{0xa0, 0x06, 0x01})
+				allocationResources.ProtoReflect().SetUnknown(unknownBytes)
 				allocated = &ateapipb.WorkerResources{Resources: allocationResources}
 			}
 			worker, err := p.CreateWorker(ctx, &ateapipb.Worker{Metadata: &ateapipb.ResourceMetadata{Name: "unknown-allocation-worker"}, Status: &ateapipb.WorkerStatus{State: ateapipb.WorkerState_WORKER_STATE_ACTIVE, Allocated: allocated}})
 			if err != nil {
 				t.Fatal(err)
 			}
-			// Read from PostgreSQL so the unknown bytes must survive serialization.
-			before, err := p.GetWorker(ctx, worker.GetMetadata().GetName())
-			if err != nil {
-				t.Fatal(err)
+			// GetWorker deliberately discards unknown fields. Read the stored bytes
+			// directly and use the same preserving decoder as getWorkerForUpdate.
+			readStored := func() ([]byte, *ateapipb.Worker) {
+				t.Helper()
+				var data []byte
+				if err := p.pool.QueryRow(ctx, `SELECT proto FROM workers WHERE name = $1`, worker.GetMetadata().GetName()).Scan(&data); err != nil {
+					t.Fatal(err)
+				}
+				stored := &ateapipb.Worker{}
+				if err := proto.Unmarshal(data, stored); err != nil {
+					t.Fatal(err)
+				}
+				return data, stored
 			}
+			outboxCount := func() int {
+				t.Helper()
+				var count int
+				if err := p.pool.QueryRow(ctx, `SELECT count(*) FROM worker_outbox`).Scan(&count); err != nil {
+					t.Fatal(err)
+				}
+				return count
+			}
+			beforeBytes, before := readStored()
 			if !proto.Equal(worker, before) {
 				t.Fatal("persisted worker differs from created worker")
 			}
-			if unknown && (len(before.GetStatus().GetAllocated().GetResources().GetLimits()) != 0 || len(before.GetStatus().GetAllocated().GetResources().ProtoReflect().GetUnknown()) == 0) {
+			if unknown && (len(before.GetStatus().GetAllocated().GetResources().GetLimits()) != 0 || !bytes.Equal(before.GetStatus().GetAllocated().GetResources().ProtoReflect().GetUnknown(), unknownBytes) || before.GetStatus().GetAllocated().GetActors() != 0) {
 				t.Fatal("fixture must contain only nested unknown allocation")
 			}
-			drained, drainErr := p.DrainEmptyWorker(ctx, worker.GetMetadata().GetName(), store.PreconditionFrom(before))
-			after, err := p.GetWorker(ctx, worker.GetMetadata().GetName())
+			watch, err := p.WatchWorkers(ctx)
 			if err != nil {
 				t.Fatal(err)
 			}
+			defer watch.Close()
+			beforeEvents := outboxCount()
+			drained, drainErr := p.DrainEmptyWorker(ctx, worker.GetMetadata().GetName(), store.PreconditionFrom(worker))
+			afterBytes, after := readStored()
 			if unknown {
 				if !errors.Is(drainErr, store.ErrFailedPrecondition) || drained != nil {
 					t.Fatalf("unknown allocation accepted: %v %v", drained, drainErr)
 				}
-				if !proto.Equal(before, after) {
+				if !bytes.Equal(beforeBytes, afterBytes) || !proto.Equal(before, after) {
 					t.Fatalf("refused drain mutated worker: before %v after %v", before, after)
 				}
+				if outboxCount() != beforeEvents {
+					t.Fatal("refused drain appended an outbox event")
+				}
 			} else {
-				if drainErr != nil || drained.GetStatus().GetState() != ateapipb.WorkerState_WORKER_STATE_DRAINING || after.GetStatus().GetAllocated() != nil || after.GetMetadata().GetUid() != before.GetMetadata().GetUid() || after.GetMetadata().GetVersion() != before.GetMetadata().GetVersion()+1 {
+				if drainErr != nil || drained.GetStatus().GetState() != ateapipb.WorkerState_WORKER_STATE_DRAINING || !proto.Equal(after.GetStatus().GetAllocated(), before.GetStatus().GetAllocated()) || after.GetMetadata().GetUid() != before.GetMetadata().GetUid() || after.GetMetadata().GetVersion() != before.GetMetadata().GetVersion()+1 {
 					t.Fatalf("empty nil allocation refused or changed identity/allocation: %v %v", drained, drainErr)
 				}
+				if outboxCount() != beforeEvents+1 {
+					t.Fatal("successful drain must append exactly one outbox event")
+				}
+				select {
+				case event := <-watch.Events:
+					if event.Type != store.WorkerEventUpdated || !proto.Equal(event.Worker, after) {
+						t.Fatalf("unexpected drain event: %v", event)
+					}
+				case <-time.After(2 * time.Second):
+					t.Fatal("missing drain event")
+				}
+			}
+			select {
+			case event := <-watch.Events:
+				t.Fatalf("unexpected worker event: %v", event)
+			case <-time.After(500 * time.Millisecond):
 			}
 			actorAfter, err := p.GetActor(ctx, resources.ActorRefFromActor(actor))
 			if err != nil || !proto.Equal(actor, actorAfter) {
