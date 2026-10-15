@@ -24,6 +24,7 @@ import (
 	"github.com/agent-substrate/substrate/cmd/ateapi/internal/store"
 	"github.com/agent-substrate/substrate/internal/resources"
 	"github.com/agent-substrate/substrate/pkg/proto/ateapipb"
+	"github.com/jackc/pgx/v5"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -147,12 +148,16 @@ func TestProveEmptyDraining_ProductionRefusalsAndNoEffects(t *testing.T) {
 			}
 			before, version, outbox, assignments := snapshot()
 			var actorBefore []byte
-			_ = p.pool.QueryRow(ctx, `SELECT proto FROM actors LIMIT 1`).Scan(&actorBefore)
+			if err := p.pool.QueryRow(ctx, `SELECT proto FROM actors LIMIT 1`).Scan(&actorBefore); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+				t.Fatal(err)
+			}
 			proof, err := p.ProveEmptyDraining(ctx, expected)
 			requireOwnershipRefusal(t, proof, err, reason)
 			after, versionAfter, outboxAfter, assignmentsAfter := snapshot()
 			var actorAfter []byte
-			_ = p.pool.QueryRow(ctx, `SELECT proto FROM actors LIMIT 1`).Scan(&actorAfter)
+			if err := p.pool.QueryRow(ctx, `SELECT proto FROM actors LIMIT 1`).Scan(&actorAfter); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+				t.Fatal(err)
+			}
 			if !bytes.Equal(before, after) || version != versionAfter || outbox != outboxAfter || assignments != assignmentsAfter || !bytes.Equal(actorBefore, actorAfter) {
 				t.Fatal("refusal mutated durable state")
 			}

@@ -42,8 +42,10 @@ atomic drain implementation and fixture assertions are preserved.
 
 ## Requirements for a supported producer
 
-These are outstanding implementation requirements, not an available API or a
-claim that the proof exists:
+These requirements distinguish full release evidence from the implemented
+refusal path. Identity validation and current dependency refusals are present;
+stable positive evidence, lifecycle admission fences and full acceptance remain
+outstanding:
 
 1. Authenticate and validate exact caller-observed worker UID/version and
    canonical Pod/node coordinates. Refuse ACTIVE, stale/reused identity,

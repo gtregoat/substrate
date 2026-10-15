@@ -1162,12 +1162,17 @@ func TestDrainEmptyWorker_RPC(t *testing.T) {
 }
 
 func TestProveEmptyDraining_Validation(t *testing.T) {
-	svc := &RPCService{} // Invalid input must fail before storage.
+	svc := &RPCService{}
+	if proof, err := svc.ProveEmptyDraining(context.Background(), nil); proof != nil || status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("nil request: %v %v", proof, err)
+	}
+	// Invalid input must fail before storage.
 	valid := validWorker(apiWorkerName, withWorkerStatus(func(s *ateapipb.WorkerStatus) { s.State = ateapipb.WorkerState_WORKER_STATE_DRAINING }))
 	valid.Metadata.Uid = apiOtherWorkerName
 	valid.Metadata.Version = 1
 	for _, mutate := range []func(*ateapipb.ProveEmptyDrainingRequest){
 		func(r *ateapipb.ProveEmptyDrainingRequest) { r.ExpectedWorker = nil },
+		func(r *ateapipb.ProveEmptyDrainingRequest) { r.ProtoReflect().SetUnknown([]byte{0xa0, 0x06, 0x01}) },
 		func(r *ateapipb.ProveEmptyDrainingRequest) { r.ExpectedWorker.Metadata.Name = "" },
 		func(r *ateapipb.ProveEmptyDrainingRequest) { r.ExpectedWorker.Metadata.Atespace = "other" },
 		func(r *ateapipb.ProveEmptyDrainingRequest) { r.ExpectedWorker.Metadata.Uid = "" },

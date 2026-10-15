@@ -432,6 +432,9 @@ func (s *ServiceImpl) ProveEmptyDraining(ctx context.Context, expected *ateapipb
 }
 
 func (s *RPCService) ProveEmptyDraining(ctx context.Context, req *ateapipb.ProveEmptyDrainingRequest) (*ateapipb.ProveEmptyDrainingResponse, error) {
+	if req == nil || len(req.ProtoReflect().GetUnknown()) != 0 {
+		return nil, status.Error(codes.InvalidArgument, "complete known ownership proof request required")
+	}
 	if errs := Validate_ProveEmptyDrainingRequest(ctx, operation.Operation{Type: operation.Create}, nil, req, nil); len(errs) > 0 {
 		return nil, toGRPCStatusError(errs)
 	}
@@ -450,6 +453,10 @@ func (s *RPCService) ProveEmptyDraining(ctx context.Context, req *ateapipb.Prove
 		return nil, status.Error(codes.Aborted, "worker identity or version changed; read again")
 	case errors.Is(err, store.ErrPreconditionRequired):
 		return nil, status.Error(codes.InvalidArgument, "worker UID and positive version required")
+	}
+	// A partial success is not ownership evidence, including a nil result.
+	if err == nil && (proof == nil || proof.GetOwnershipGeneration() == "" || len(proof.ProtoReflect().GetUnknown()) != 0 || !proto.Equal(proof.GetWorker(), expected)) {
+		err = &store.OwnershipRefusal{Reason: store.OwnershipUnknown}
 	}
 	var refusal *store.OwnershipRefusal
 	if errors.As(err, &refusal) {
