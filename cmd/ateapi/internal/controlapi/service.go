@@ -131,6 +131,7 @@ type serviceStore interface {
 	CreateWorker(ctx context.Context, worker *ateapipb.Worker) (*ateapipb.Worker, error)
 	UpdateWorker(ctx context.Context, name string, precondition store.Precondition, mutate func(toUpdate *ateapipb.Worker) error) (*ateapipb.Worker, error)
 	DrainEmptyWorker(ctx context.Context, name string, precondition store.Precondition) (*ateapipb.Worker, error)
+	ProveEmptyDraining(ctx context.Context, expected *ateapipb.Worker) (*ateapipb.ProveEmptyDrainingResponse, error)
 	AcquireLease(ctx context.Context, key string) (*store.Lease, error)
 }
 

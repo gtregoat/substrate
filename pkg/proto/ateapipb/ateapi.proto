@@ -126,6 +126,13 @@ service Control {
   // requires fresh UID/version and still proves emptiness under the bind lock.
   rpc DrainEmptyWorker(DrainEmptyWorkerRequest) returns (Worker) {}
 
+  // Native ownership evidence for the exact caller-observed drained worker.
+  // Missing stability/retention facts return FAILED_PRECONDITION with ErrorInfo
+  // domain ateapi.worker-ownership and a concrete reason; never infer success
+  // from empty assignments, a drain response, or a refusal. See
+  // docs/api/prove-empty-draining.md. No fallback RPC is safe.
+  rpc ProveEmptyDraining(ProveEmptyDrainingRequest) returns (ProveEmptyDrainingResponse) {}
+
   // List the Actors hosted by a given Worker.
   rpc ListWorkerActorAssignments(ListWorkerActorAssignmentsRequest) returns (ListWorkerActorAssignmentsResponse) {}
 
@@ -2197,4 +2204,19 @@ message RequestActorSuspendRequest {
 message RequestActorSuspendResponse {
   // The Actor as the suspend workflow left it.
   Actor actor = 1;
+}
+
+// The complete caller-observed worker pins UID/version and canonical Pod/node
+// mapping. Required UID/version are additionally checked by the RPC boundary.
+message ProveEmptyDrainingRequest {
+  // +k8s:required
+  Worker expected_worker = 1;
+}
+
+message ProveEmptyDrainingResponse {
+  // Exact authoritative worker. A partial/absent response is never evidence.
+  Worker worker = 1;
+  // Required for release eligibility; names the stable native ownership
+  // generation. A server unable to establish it returns a typed refusal.
+  string ownership_generation = 2;
 }

@@ -5601,6 +5601,46 @@ func Validate_PauseActorRequest(
 	return errs
 }
 
+// Validate_ProveEmptyDrainingRequest validates an instance of ProveEmptyDrainingRequest according
+// to declarative validation rules in the API schema.
+func Validate_ProveEmptyDrainingRequest(
+	ctx context.Context, op operation.Operation, fldPath *field.Path,
+	obj, oldObj *ateapipb.ProveEmptyDrainingRequest) (errs field.ErrorList) {
+
+	{ // field ateapipb.ProveEmptyDrainingRequest.ExpectedWorker
+		fn := func(
+			fldPath *field.Path,
+			obj, oldObj *ateapipb.Worker,
+			oldValueCorrelated bool) (errs field.ErrorList) {
+			// don't revalidate unchanged data
+			if oldValueCorrelated && op.Type == operation.Update {
+				if ateDeepEqual(obj, oldObj) {
+					return nil
+				}
+			}
+			// call field-attached validations
+			earlyReturn := false
+			if e := validate.RequiredPointer(ctx, op, fldPath, obj, oldObj).MarkShortCircuit(); len(e) != 0 {
+				errs = append(errs, e...)
+				earlyReturn = true
+			}
+			if earlyReturn {
+				return // do not proceed
+			}
+			// call the type's validation function
+			errs = append(errs, Validate_Worker(ctx, op, fldPath, obj, oldObj)...)
+			return
+		}
+		oldVal := safe.Field(oldObj,
+			func(oldObj *ateapipb.ProveEmptyDrainingRequest) *ateapipb.Worker {
+				return oldObj.ExpectedWorker
+			})
+		errs = append(errs, fn(fldPath.Child("expected_worker"), obj.ExpectedWorker, oldVal, oldObj != nil)...)
+	}
+
+	return errs
+}
+
 // Validate_RequestActorSuspendRequest validates an instance of RequestActorSuspendRequest according
 // to declarative validation rules in the API schema.
 func Validate_RequestActorSuspendRequest(
