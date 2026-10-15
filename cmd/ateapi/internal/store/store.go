@@ -225,6 +225,7 @@ type Interface interface {
 	// precondition no longer holds, ErrVersionConflict if the retry budget is
 	// exhausted, or the mutate's error verbatim otherwise.
 	UpdateWorker(ctx context.Context, name string, precondition Precondition, mutate func(toUpdate *ateapipb.Worker) error) (*ateapipb.Worker, error)
+	DrainEmptyWorker(ctx context.Context, name string, precondition Precondition) (*ateapipb.Worker, error)
 
 	// Removes a worker by name, along with every assignment it holds, and
 	// returns the deleted resource. Returns ErrNotFound if missing, or

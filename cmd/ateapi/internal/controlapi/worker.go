@@ -403,3 +403,21 @@ func ValidateCustom_UpdateWorkerRequest_Worker(ctx context.Context, op operation
 	errs = append(errs, validate.ForbiddenValue(ctx, op, fldPath.Child("metadata", "atespace"), &worker.Metadata.Atespace, nil)...)
 	return errs
 }
+
+func (s *ServiceImpl) DrainEmptyWorker(ctx context.Context, name string, precondition store.Precondition) (*ateapipb.Worker, error) {
+ return s.store.DrainEmptyWorker(ctx, name, precondition)
+}
+
+func (s *RPCService) DrainEmptyWorker(ctx context.Context, req *ateapipb.DrainEmptyWorkerRequest) (*ateapipb.Worker, error) {
+ if errs := Validate_DrainEmptyWorkerRequest(ctx, operation.Operation{Type: operation.Create}, nil, req, nil); len(errs) > 0 {
+  return nil, toGRPCStatusError(errs)
+ }
+ worker, err := s.impl.DrainEmptyWorker(ctx, req.GetWorker().GetName(), store.Precondition{UID: req.GetUid(), Version: req.GetVersion()})
+ switch {
+ case errors.Is(err, store.ErrNotFound): return nil, status.Error(codes.NotFound, "worker not found")
+ case errors.Is(err, store.ErrUIDConflict), errors.Is(err, store.ErrVersionConflict): return nil, status.Error(codes.Aborted, "worker identity or version changed; read again")
+ case errors.Is(err, store.ErrPreconditionRequired): return nil, status.Error(codes.InvalidArgument, "worker UID and version required")
+ case errors.Is(err, store.ErrFailedPrecondition): return nil, status.Error(codes.FailedPrecondition, "worker must be empty and ACTIVE or DRAINING")
+ }
+ return worker, err
+}

@@ -117,6 +117,15 @@ service Control {
   // Returns ABORTED if another write lands on the Worker first; retry.
   rpc DrainWorker(DrainWorkerRequest) returns (Worker) {}
 
+  // Atomically drains only an empty worker at the caller-observed revision.
+  // ABORTED means stale identity/version; FAILED_PRECONDITION means busy or
+  // inactive. Never fall back to DrainWorker on UNIMPLEMENTED or uncertainty.
+  // The returned Worker carries authoritative UID, version and state. After a
+  // lost response, GetWorker must succeed with the same UID and DRAINING state
+  // before reconciling success; unavailable/missing reads mean unknown. A retry
+  // requires fresh UID/version and still proves emptiness under the bind lock.
+  rpc DrainEmptyWorker(DrainEmptyWorkerRequest) returns (Worker) {}
+
   // List the Actors hosted by a given Worker.
   rpc ListWorkerActorAssignments(ListWorkerActorAssignmentsRequest) returns (ListWorkerActorAssignmentsResponse) {}
 
@@ -1851,6 +1860,23 @@ message DrainWorkerRequest {
   // +k8s:required
   // +k8s:beta(since: "0.0")=+k8s:subfield(atespace)=+k8s:forbidden # TODO: get rid of beta prefix
   ObjectRef worker = 1;
+}
+
+// Workers are global-scoped; atespace must be empty, as for DrainWorker.
+message DrainEmptyWorkerRequest {
+  // +k8s:required
+  // +k8s:beta(since: "0.0")=+k8s:subfield(atespace)=+k8s:forbidden
+  ObjectRef worker = 1;
+
+  // Caller-observed incarnation; never inferred by the server.
+  // +k8s:required
+  // +k8s:format=k8s-uuid
+  string uid = 2;
+
+  // Caller-observed revision; zero never waives the guard.
+  // +k8s:required
+  // +k8s:minimum=1
+  int64 version = 3;
 }
 
 // List actors with pagination. Provides "soft" guarantees: actors may be
