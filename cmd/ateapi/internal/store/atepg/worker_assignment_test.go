@@ -494,3 +494,95 @@ func TestDrainEmptyWorker_UnknownNestedAllocation(t *testing.T) {
 		})
 	}
 }
+
+// DrainEmptyWorker fences assignments to one worker, not node retirement.
+// These are real store counterexamples to using its response as ownership
+// evidence. They deliberately preserve the established drain contract.
+func TestDrainEmptyWorker_DoesNotCertifyNodeRetirement(t *testing.T) {
+	for _, checkpointFirst := range []bool{true, false} {
+		t.Run(fmt.Sprint("checkpoint-first-", checkpointFirst), func(t *testing.T) {
+			p := setupPostgresPersistence(t)
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			createTestAtespace(t, p, "retirement-team")
+			target, err := p.CreateWorker(ctx, &ateapipb.Worker{
+				Metadata: &ateapipb.ResourceMetadata{Name: "retirement-target"},
+				NodeName: "retirement-node",
+				Status:   &ateapipb.WorkerStatus{State: ateapipb.WorkerState_WORKER_STATE_ACTIVE},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			sibling, err := p.CreateWorker(ctx, &ateapipb.Worker{
+				Metadata: &ateapipb.ResourceMetadata{Name: "retirement-sibling"},
+				NodeName: target.GetNodeName(),
+				Status:   &ateapipb.WorkerStatus{State: ateapipb.WorkerState_WORKER_STATE_ACTIVE, Capacity: &ateapipb.WorkerResources{Actors: 1}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			actor, err := p.CreateActor(ctx, &ateapipb.Actor{
+				Metadata: &ateapipb.ResourceMetadata{Atespace: "retirement-team", Name: "paused-on-node"},
+				Status:   &ateapipb.ActorStatus{State: ateapipb.ActorState_ACTOR_STATE_SUSPENDED},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			ref := resources.ActorRefFromActor(actor)
+			publishLocal := func() {
+				t.Helper()
+				// This UpdateActor is the publication boundary FinalizePaused uses:
+				// local ownership and cleared worker pointer commit together, without
+				// locking the target worker. No atelet or live checkpoint is invoked.
+				actor, err = p.UpdateActor(ctx, ref, store.PreconditionFrom(actor), func(a *ateapipb.Actor) error {
+					a.Status.State = ateapipb.ActorState_ACTOR_STATE_PAUSED
+					a.Status.LocalSnapshot = &ateapipb.LocalSnapshot{SnapshotName: "local-checkpoint", NodeVmsWithLocalSnapshots: []string{target.GetNodeName()}}
+					a.Status.WorkerAssignment = nil
+					return nil
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			if checkpointFirst {
+				publishLocal()
+			}
+			drained, err := p.DrainEmptyWorker(ctx, target.GetMetadata().GetName(), store.PreconditionFrom(target))
+			if err != nil {
+				t.Fatalf("empty target drain: %v", err)
+			}
+			if !checkpointFirst {
+				// The sibling's independent row lock still admits work after the target
+				// drain commits. A transaction-only scan of the node cannot fence this.
+				scheduler := scheduling.New(nil)
+				if err := p.BindActorToWorker(ctx, sibling.GetMetadata().GetName(), &ateapipb.ActorAssignment{ActorUid: actor.GetMetadata().GetUid()}, func(w *ateapipb.Worker) error {
+					if !scheduler.Applies(w, scheduling.Constraints{}) || !scheduler.HasRoom(w, scheduling.Constraints{}) {
+						return store.ErrFailedPrecondition
+					}
+					return nil
+				}); err != nil {
+					t.Fatalf("sibling admission after target drain: %v", err)
+				}
+				if _, err := p.ReleaseActorFromWorker(ctx, sibling.GetMetadata().GetName(), actor.GetMetadata().GetUid()); err != nil {
+					t.Fatal(err)
+				}
+				publishLocal()
+			}
+			after, err := p.GetWorker(ctx, target.GetMetadata().GetName())
+			if err != nil || !proto.Equal(after, drained) {
+				t.Fatalf("target changed: %v %v", after, err)
+			}
+			if after.GetStatus().GetState() != ateapipb.WorkerState_WORKER_STATE_DRAINING || after.GetStatus().GetAllocated() != nil {
+				t.Fatalf("target not empty and drained: %v", after)
+			}
+			assignments, err := p.ListWorkerAssignments(ctx, target.GetMetadata().GetName(), store.ListOptions{})
+			if err != nil || len(assignments.Items) != 0 {
+				t.Fatalf("target assignments: %v %v", assignments, err)
+			}
+			retained, err := p.GetActor(ctx, ref)
+			if err != nil || !proto.Equal(retained, actor) || retained.GetStatus().GetLocalSnapshot().GetNodeVmsWithLocalSnapshots()[0] != target.GetNodeName() {
+				t.Fatalf("local dependency changed: %v %v", retained, err)
+			}
+		})
+	}
+}
