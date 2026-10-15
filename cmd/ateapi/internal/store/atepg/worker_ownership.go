@@ -167,7 +167,9 @@ func actorRetirementDependency(actor *ateapipb.Actor, worker *ateapipb.Worker) e
 			return ownershipRefusal(store.OwnershipMappingChanged)
 		}
 	}
-	if local := s.GetLocalSnapshot(); local != nil {
+	// Resume leaves LocalSnapshot on RUNNING actors. It is historical there;
+	// running-origin suspend uses the assignment rather than uploading it.
+	if local := s.GetLocalSnapshot(); local != nil && s.GetState() != ateapipb.ActorState_ACTOR_STATE_RUNNING {
 		if local.GetSnapshotName() == "" || len(local.GetNodeVmsWithLocalSnapshots()) == 0 {
 			return ownershipRefusal(store.OwnershipUnknown)
 		}

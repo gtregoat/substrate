@@ -20,7 +20,9 @@ allocation, durable assignments, actor pointers and local checkpoints. It reads
 raw protobufs without the public read path's deliberate unknown-field discard.
 Corrupt/unknown data is uncertainty. No worker, actor, assignment, snapshot,
 volume, version or outbox row is changed. An unrelated external snapshot or
-historical actor alone is not a node-local dependency.
+historical actor alone is not a node-local dependency. RUNNING actors retain
+stale pause snapshot metadata; the current assignment, rather than that
+historical checkpoint, determines their active node dependency.
 
 ## Wire outcomes
 

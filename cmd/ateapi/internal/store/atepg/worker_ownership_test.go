@@ -275,6 +275,7 @@ func TestActorRetirementDependency(t *testing.T) {
 		status *ateapipb.ActorStatus
 		reason string
 	}{
+		{"running-historical-checkpoint", &ateapipb.ActorStatus{State: ateapipb.ActorState_ACTOR_STATE_RUNNING, WorkerAssignment: &ateapipb.WorkerAssignment{Worker: &ateapipb.ObjectRef{Name: "unrelated-worker"}, NodeName: "unrelated-node"}, LocalSnapshot: &ateapipb.LocalSnapshot{SnapshotName: "historical", NodeVmsWithLocalSnapshots: []string{"node"}}}, ""},
 		{"external-independent", &ateapipb.ActorStatus{State: ateapipb.ActorState_ACTOR_STATE_SUSPENDED, ExternalSnapshot: &ateapipb.ExternalSnapshot{SnapshotUri: "gs://retained/object"}}, ""},
 		{"local-on-node", &ateapipb.ActorStatus{State: ateapipb.ActorState_ACTOR_STATE_PAUSED, LocalSnapshot: &ateapipb.LocalSnapshot{SnapshotName: "checkpoint", NodeVmsWithLocalSnapshots: []string{"node"}}}, store.OwnershipLocalCheckpoint},
 		{"local-on-other-node", &ateapipb.ActorStatus{State: ateapipb.ActorState_ACTOR_STATE_PAUSED, LocalSnapshot: &ateapipb.LocalSnapshot{SnapshotName: "checkpoint", NodeVmsWithLocalSnapshots: []string{"unrelated-node"}}}, ""},
