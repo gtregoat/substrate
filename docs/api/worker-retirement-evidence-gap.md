@@ -74,3 +74,47 @@ by this investigation. Generated API, production producer and new race tests
 remain unfinished. Review/publication, CI, Kargo deployment, capability rollout,
 Goat integration and deployed acceptance remain owner delivery work; this
 source does not authorize or demonstrate live cleanup.
+
+## Blocking schedule and authority boundary
+
+A concrete interleaving demonstrates the missing fact:
+
+1. Empty worker W on node N becomes DRAINING. A proof transaction locks W and
+   observes no current node-local dependencies.
+2. That transaction commits. Sibling worker S on N remains ACTIVE and its
+   independent worker row still admits a new binding.
+3. S's actor pauses and publishes a local checkpoint on N through `UpdateActor`.
+4. Releasing W's protection can now allow ordinary removal of N to destroy that
+   useful checkpoint. Locking the actor/worker tables only during step 1 does
+   not prevent step 3 after commit.
+
+Keeping the fence solely in W cannot bridge ordinary removal either:
+`cmd/atecontroller/internal/workersync/syncer.go`, `reconcileDeadWorker`, invokes
+`DeleteWorker` when the Pod disappears. `workflow_worker_delete.go` clears actor
+pointers and ultimately removes the Worker row. A fence that survives that
+lifecycle needs supported persistent node ownership state. Existing workflow
+leases record key/token/expiry but not the node dependencies of an operation
+whose actor pointer has subsequently been cleared.
+
+The task's later constraint-conflict steering explicitly prohibits any new
+durable schema/fence and says to report missing authority as a blocker. No
+migration, permanent lease tombstone, retained deleted Worker, transient lock
+presented as durable evidence, or new producer facade is shipped. The proposed
+producer draft was removed after that steering. The required stable positive
+proof and typed RPC/store refusals remain unimplemented, rather than exposing
+an API that can falsely certify safety or can never succeed.
+
+`TestDrainEmptyWorker_DoesNotCertifyNodeRetirement` adds two real PostgreSQL
+store cases, using the existing migrated fixture: local checkpoint publication
+before drain, and sibling admission/local checkpoint publication after drain.
+Both assert that the target remains empty and DRAINING while the actor retains
+its node-local checkpoint. They document the native boundary's insufficiency;
+they are not producer acceptance, an atelet upload test, or a claim of a passing
+SQL execution. No existing drain assertions are weakened.
+
+Completion requires owner-admitted support for the durable node and in-flight
+operation ownership facts (or an identified existing complete native boundary),
+then the RPC/store producer, generated contract, lifecycle admission hooks and
+all requested positive/refusal/race tests. Tool availability does not remove
+that implementation requirement. The added documentation is outside the
+original write list because it records this exact ownership-evidence blocker.
