@@ -454,18 +454,34 @@ func TestDrainEmptyWorker_UnknownNestedAllocation(t *testing.T) {
 					t.Fatal("successful drain must append exactly one outbox event")
 				}
 				select {
-				case event := <-watch.Events:
-					if event.Type != store.WorkerEventUpdated || !proto.Equal(event.Worker, after) {
+				case event, ok := <-watch.Events:
+					if !ok {
+						t.Fatal("worker watch closed before drain event")
+					}
+					if event.Type != store.WorkerEventUpdated || event.Worker.GetMetadata().GetUid() != after.GetMetadata().GetUid() || event.Worker.GetMetadata().GetVersion() != after.GetMetadata().GetVersion() || !proto.Equal(event.Worker, after) {
 						t.Fatalf("unexpected drain event: %v", event)
 					}
 				case <-time.After(2 * time.Second):
 					t.Fatal("missing drain event")
 				}
 			}
-			select {
-			case event := <-watch.Events:
-				t.Fatalf("unexpected worker event: %v", event)
-			case <-time.After(500 * time.Millisecond):
+			// Own writes can arrive again through the outbox poll. Observe the
+			// entire original interval, accepting only identical update deliveries.
+			observation := time.NewTimer(500 * time.Millisecond)
+			defer observation.Stop()
+		observe:
+			for {
+				select {
+				case event, ok := <-watch.Events:
+					if !ok {
+						t.Fatal("worker watch closed during observation")
+					}
+					if unknown || event.Type != store.WorkerEventUpdated || event.Worker.GetMetadata().GetUid() != after.GetMetadata().GetUid() || event.Worker.GetMetadata().GetVersion() != after.GetMetadata().GetVersion() || !proto.Equal(event.Worker, after) {
+						t.Fatalf("unexpected worker event: %v", event)
+					}
+				case <-observation.C:
+					break observe
+				}
 			}
 			actorAfter, err := p.GetActor(ctx, resources.ActorRefFromActor(actor))
 			if err != nil || !proto.Equal(actor, actorAfter) {
