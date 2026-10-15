@@ -59,6 +59,7 @@ const (
 	Control_DeleteWorker_FullMethodName               = "/ateapi.Control/DeleteWorker"
 	Control_DrainWorker_FullMethodName                = "/ateapi.Control/DrainWorker"
 	Control_DrainEmptyWorker_FullMethodName           = "/ateapi.Control/DrainEmptyWorker"
+	Control_ProveEmptyDraining_FullMethodName         = "/ateapi.Control/ProveEmptyDraining"
 	Control_ListWorkerActorAssignments_FullMethodName = "/ateapi.Control/ListWorkerActorAssignments"
 	Control_ListActors_FullMethodName                 = "/ateapi.Control/ListActors"
 	Control_CreateAtespace_FullMethodName             = "/ateapi.Control/CreateAtespace"
@@ -154,6 +155,12 @@ type ControlClient interface {
 	// before reconciling success; unavailable/missing reads mean unknown. A retry
 	// requires fresh UID/version and still proves emptiness under the bind lock.
 	DrainEmptyWorker(ctx context.Context, in *DrainEmptyWorkerRequest, opts ...grpc.CallOption) (*Worker, error)
+	// Native ownership evidence for the exact caller-observed drained worker.
+	// Missing stability/retention facts return FAILED_PRECONDITION with ErrorInfo
+	// domain ateapi.worker-ownership and a concrete reason; never infer success
+	// from empty assignments, a drain response, or a refusal. See
+	// docs/api/prove-empty-draining.md. No fallback RPC is safe.
+	ProveEmptyDraining(ctx context.Context, in *ProveEmptyDrainingRequest, opts ...grpc.CallOption) (*ProveEmptyDrainingResponse, error)
 	// List the Actors hosted by a given Worker.
 	ListWorkerActorAssignments(ctx context.Context, in *ListWorkerActorAssignmentsRequest, opts ...grpc.CallOption) (*ListWorkerActorAssignmentsResponse, error)
 	// List Actors.
@@ -443,6 +450,16 @@ func (c *controlClient) DrainEmptyWorker(ctx context.Context, in *DrainEmptyWork
 	return out, nil
 }
 
+func (c *controlClient) ProveEmptyDraining(ctx context.Context, in *ProveEmptyDrainingRequest, opts ...grpc.CallOption) (*ProveEmptyDrainingResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ProveEmptyDrainingResponse)
+	err := c.cc.Invoke(ctx, Control_ProveEmptyDraining_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *controlClient) ListWorkerActorAssignments(ctx context.Context, in *ListWorkerActorAssignmentsRequest, opts ...grpc.CallOption) (*ListWorkerActorAssignmentsResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ListWorkerActorAssignmentsResponse)
@@ -626,6 +643,12 @@ type ControlServer interface {
 	// before reconciling success; unavailable/missing reads mean unknown. A retry
 	// requires fresh UID/version and still proves emptiness under the bind lock.
 	DrainEmptyWorker(context.Context, *DrainEmptyWorkerRequest) (*Worker, error)
+	// Native ownership evidence for the exact caller-observed drained worker.
+	// Missing stability/retention facts return FAILED_PRECONDITION with ErrorInfo
+	// domain ateapi.worker-ownership and a concrete reason; never infer success
+	// from empty assignments, a drain response, or a refusal. See
+	// docs/api/prove-empty-draining.md. No fallback RPC is safe.
+	ProveEmptyDraining(context.Context, *ProveEmptyDrainingRequest) (*ProveEmptyDrainingResponse, error)
 	// List the Actors hosted by a given Worker.
 	ListWorkerActorAssignments(context.Context, *ListWorkerActorAssignmentsRequest) (*ListWorkerActorAssignmentsResponse, error)
 	// List Actors.
@@ -732,6 +755,9 @@ func (UnimplementedControlServer) DrainWorker(context.Context, *DrainWorkerReque
 }
 func (UnimplementedControlServer) DrainEmptyWorker(context.Context, *DrainEmptyWorkerRequest) (*Worker, error) {
 	return nil, status.Error(codes.Unimplemented, "method DrainEmptyWorker not implemented")
+}
+func (UnimplementedControlServer) ProveEmptyDraining(context.Context, *ProveEmptyDrainingRequest) (*ProveEmptyDrainingResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ProveEmptyDraining not implemented")
 }
 func (UnimplementedControlServer) ListWorkerActorAssignments(context.Context, *ListWorkerActorAssignmentsRequest) (*ListWorkerActorAssignmentsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListWorkerActorAssignments not implemented")
@@ -1252,6 +1278,24 @@ func _Control_DrainEmptyWorker_Handler(srv interface{}, ctx context.Context, dec
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Control_ProveEmptyDraining_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ProveEmptyDrainingRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ControlServer).ProveEmptyDraining(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Control_ProveEmptyDraining_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ControlServer).ProveEmptyDraining(ctx, req.(*ProveEmptyDrainingRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _Control_ListWorkerActorAssignments_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(ListWorkerActorAssignmentsRequest)
 	if err := dec(in); err != nil {
@@ -1542,6 +1586,10 @@ var Control_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "DrainEmptyWorker",
 			Handler:    _Control_DrainEmptyWorker_Handler,
+		},
+		{
+			MethodName: "ProveEmptyDraining",
+			Handler:    _Control_ProveEmptyDraining_Handler,
 		},
 		{
 			MethodName: "ListWorkerActorAssignments",

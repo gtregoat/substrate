@@ -1,9 +1,9 @@
 # Worker retirement evidence: unresolved native boundary
 
-Status: investigation only. There is no ownership-evidence RPC in this change.
-`DrainEmptyWorker` is not retirement evidence, and a consumer must continue to
-refuse release when its ownership authority is unavailable. The existing live
-guard remains unchanged.
+Status: the native RPC/store typed-refusal path is implemented; stable positive
+ownership evidence remains unimplemented. See [the consumer contract](prove-empty-draining.md).
+`DrainEmptyWorker` is not retirement evidence. All current proof results refuse
+release, and the existing live guard remains unchanged.
 
 ## Source-preserving starting point
 
@@ -70,7 +70,7 @@ claim that the proof exists:
    dependency publication in both orders. Keep the existing drain tests intact.
 
 No new schema, controller, attestation service or lifecycle fence is introduced
-by this investigation. Generated API, production producer and new race tests
+by this investigation. Stable positive proof and its full new race acceptance
 remain unfinished. Review/publication, CI, Kargo deployment, capability rollout,
 Goat integration and deployed acceptance remain owner delivery work; this
 source does not authorize or demonstrate live cleanup.
@@ -98,11 +98,11 @@ whose actor pointer has subsequently been cleared.
 
 The task's later constraint-conflict steering explicitly prohibits any new
 durable schema/fence and says to report missing authority as a blocker. No
-migration, permanent lease tombstone, retained deleted Worker, transient lock
-presented as durable evidence, or new producer facade is shipped. The proposed
-producer draft was removed after that steering. The required stable positive
-proof and typed RPC/store refusals remain unimplemented, rather than exposing
-an API that can falsely certify safety or can never succeed.
+migration, permanent lease tombstone, retained deleted Worker or transient lock
+presented as durable evidence is shipped. The later underdelivery steering
+authorizes a concrete typed-refusal RPC/store path when native stability facts
+remain unprovable. That path is implemented, including STABILITY_UNPROVEN for
+an empty candidate; it is explicitly not the completed positive proof.
 
 `TestDrainEmptyWorker_DoesNotCertifyNodeRetirement` adds two real PostgreSQL
 store cases, using the existing migrated fixture: local checkpoint publication
@@ -114,7 +114,8 @@ SQL execution. No existing drain assertions are weakened.
 
 Completion requires owner-admitted support for the durable node and in-flight
 operation ownership facts (or an identified existing complete native boundary),
-then the RPC/store producer, generated contract, lifecycle admission hooks and
-all requested positive/refusal/race tests. Tool availability does not remove
+then the stable positive producer, lifecycle admission hooks and
+all remaining requested positive/race tests. The generated RPC and typed
+refusal store path can already be reviewed independently. Tool availability does not remove
 that implementation requirement. The added documentation is outside the
 original write list because it records this exact ownership-evidence blocker.
