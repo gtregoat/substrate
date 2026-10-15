@@ -126,6 +126,12 @@ service Control {
   // requires fresh UID/version and still proves emptiness under the bind lock.
   rpc DrainEmptyWorker(DrainEmptyWorkerRequest) returns (Worker) {}
 
+  // Establish durable native retirement eligibility for this exact DRAINING
+  // worker and its containing node. This fences new node ownership, not merely
+  // counts it. Never fall back to a drain/list/stats RPC. See
+  // docs/api/prove-empty-draining.md for validity and typed refusal semantics.
+  rpc ProveEmptyDraining(ProveEmptyDrainingRequest) returns (ProveEmptyDrainingResponse) {}
+
   // List the Actors hosted by a given Worker.
   rpc ListWorkerActorAssignments(ListWorkerActorAssignmentsRequest) returns (ListWorkerActorAssignmentsResponse) {}
 
@@ -2197,4 +2203,20 @@ message RequestActorSuspendRequest {
 message RequestActorSuspendResponse {
   // The Actor as the suspend workflow left it.
   Actor actor = 1;
+}
+
+// The complete caller-observed Worker pins incarnation, revision and immutable
+// namespace/Pod/Pod UID/node coordinates. Status must be DRAINING. A partial
+// identity or unavailable read is never evidence of emptiness.
+message ProveEmptyDrainingRequest {
+  // +k8s:required
+  Worker expected_worker = 1;
+}
+
+message ProveEmptyDrainingResponse {
+  // Exact authoritative worker observed under the ownership/binding fence.
+  Worker worker = 1;
+  // Durable retirement generation. Not a signature or a bearer credential.
+  // A retry at the same worker revision returns the same generation.
+  string ownership_generation = 2;
 }
