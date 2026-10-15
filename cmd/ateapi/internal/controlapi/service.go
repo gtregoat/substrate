@@ -130,6 +130,7 @@ type serviceStore interface {
 	ListWorkerAssignments(ctx context.Context, workerName string, opts store.ListOptions) (store.ListResponse[*ateapipb.ActorAssignment], error)
 	CreateWorker(ctx context.Context, worker *ateapipb.Worker) (*ateapipb.Worker, error)
 	UpdateWorker(ctx context.Context, name string, precondition store.Precondition, mutate func(toUpdate *ateapipb.Worker) error) (*ateapipb.Worker, error)
+	DrainEmptyWorker(ctx context.Context, name string, precondition store.Precondition) (*ateapipb.Worker, error)
 	AcquireLease(ctx context.Context, key string) (*store.Lease, error)
 }
 
