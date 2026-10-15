@@ -17,9 +17,16 @@ package controlapi
 import (
 	"context"
 	"fmt"
+	"github.com/agent-substrate/substrate/internal/ateapiauth"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/test/bufconn"
+	"net"
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/agent-substrate/substrate/cmd/ateapi/internal/store"
 	"github.com/agent-substrate/substrate/cmd/ateapi/internal/store/storetest"
@@ -1071,5 +1078,73 @@ func TestCreateWorker_HoldsNoCapacityUntilReported(t *testing.T) {
 	}
 	if capacity := got.GetStatus().GetCapacity(); capacity != nil {
 		t.Errorf("a request carrying a ceiling set capacity to %v, want none", capacity)
+	}
+}
+
+// Invalid requests must fail before touching storage (impl is deliberately nil).
+func TestDrainEmptyWorker_ValidationAndAuthentication(t *testing.T) {
+	svc := &RPCService{}
+	valid := &ateapipb.DrainEmptyWorkerRequest{Worker: workerRef(apiWorkerName), Uid: apiOtherWorkerName, Version: 1}
+	for _, mutate := range []func(*ateapipb.DrainEmptyWorkerRequest){
+		func(r *ateapipb.DrainEmptyWorkerRequest) { r.Worker = nil },
+		func(r *ateapipb.DrainEmptyWorkerRequest) { r.Worker.Name = "" },
+		func(r *ateapipb.DrainEmptyWorkerRequest) { r.Worker.Atespace = "other" },
+		func(r *ateapipb.DrainEmptyWorkerRequest) { r.Uid = "" },
+		func(r *ateapipb.DrainEmptyWorkerRequest) { r.Uid = "malformed" },
+		func(r *ateapipb.DrainEmptyWorkerRequest) { r.Version = 0 },
+		func(r *ateapipb.DrainEmptyWorkerRequest) { r.Version = -1 },
+	} {
+		req := proto.CloneOf(valid)
+		mutate(req)
+		if _, err := svc.DrainEmptyWorker(context.Background(), req); status.Code(err) != codes.InvalidArgument {
+			t.Fatalf("request %v: %v", req, err)
+		}
+	}
+	interceptor := ateapiauth.UnaryServerInterceptor(ateapiauth.ServerConfig{JWTProviders: []ateapiauth.JWTProvider{{Name: "test", Issuer: "https://issuer.example", Verify: func(context.Context, string) (string, error) { return "subject", nil }}}})
+	listener := bufconn.Listen(1 << 20)
+	server := grpc.NewServer(grpc.UnaryInterceptor(interceptor))
+	ateapipb.RegisterControlServer(server, svc)
+	stopped := make(chan struct{})
+	go func() { defer close(stopped); _ = server.Serve(listener) }()
+	defer func() { server.Stop(); listener.Close(); <-stopped }()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conn, err := grpc.NewClient("passthrough:///empty-drain-test", grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) { return listener.Dial() }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	client := ateapipb.NewControlClient(conn)
+	if _, err := client.DrainEmptyWorker(ctx, valid); status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("unauthenticated: %v", err)
+	}
+	authenticated := metadata.NewOutgoingContext(ctx, metadata.Pairs("authorization", "Bearer e30.eyJpc3MiOiJodHRwczovL2lzc3Vlci5leGFtcGxlIn0.Z29vZA"))
+	crossNamespace := proto.CloneOf(valid)
+	crossNamespace.Worker.Atespace = "other"
+	if _, err := client.DrainEmptyWorker(authenticated, crossNamespace); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("authenticated namespace validation: %v", err)
+	}
+	missingGuards := &ateapipb.DrainEmptyWorkerRequest{Worker: workerRef(apiWorkerName)}
+	if _, err := client.DrainEmptyWorker(authenticated, missingGuards); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("authenticated missing guards: %v", err)
+	}
+}
+
+func TestDrainEmptyWorker_RPC(t *testing.T) {
+	ctx := context.Background()
+	svc, persistence := newWorkerAPIService(t)
+	worker := seedAPIWorker(t, ctx, persistence, validWorker(apiWorkerName))
+	req := &ateapipb.DrainEmptyWorkerRequest{Worker: workerRef(apiWorkerName), Uid: worker.GetMetadata().GetUid(), Version: worker.GetMetadata().GetVersion()}
+	drained, err := svc.DrainEmptyWorker(ctx, req)
+	if err != nil || drained.GetStatus().GetState() != ateapipb.WorkerState_WORKER_STATE_DRAINING || drained.GetMetadata().GetUid() != req.Uid || drained.GetMetadata().GetVersion() != req.Version+1 {
+		t.Fatalf("drain: %v %v", drained, err)
+	}
+	if _, err := svc.DrainEmptyWorker(ctx, req); status.Code(err) != codes.Aborted {
+		t.Fatalf("stale retry: %v", err)
+	}
+	req.Version = drained.GetMetadata().GetVersion()
+	again, err := svc.DrainEmptyWorker(ctx, req)
+	if err != nil || !proto.Equal(again, drained) {
+		t.Fatalf("reconcile: %v %v", again, err)
 	}
 }

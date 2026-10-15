@@ -58,6 +58,7 @@ const (
 	Control_UpdateWorker_FullMethodName               = "/ateapi.Control/UpdateWorker"
 	Control_DeleteWorker_FullMethodName               = "/ateapi.Control/DeleteWorker"
 	Control_DrainWorker_FullMethodName                = "/ateapi.Control/DrainWorker"
+	Control_DrainEmptyWorker_FullMethodName           = "/ateapi.Control/DrainEmptyWorker"
 	Control_ListWorkerActorAssignments_FullMethodName = "/ateapi.Control/ListWorkerActorAssignments"
 	Control_ListActors_FullMethodName                 = "/ateapi.Control/ListActors"
 	Control_CreateAtespace_FullMethodName             = "/ateapi.Control/CreateAtespace"
@@ -145,6 +146,14 @@ type ControlClient interface {
 	// it. Idempotent; one-way. Deliberately leaves any bound Actor alone.
 	// Returns ABORTED if another write lands on the Worker first; retry.
 	DrainWorker(ctx context.Context, in *DrainWorkerRequest, opts ...grpc.CallOption) (*Worker, error)
+	// Atomically drains only an empty worker at the caller-observed revision.
+	// ABORTED means stale identity/version; FAILED_PRECONDITION means busy or
+	// inactive. Never fall back to DrainWorker on UNIMPLEMENTED or uncertainty.
+	// The returned Worker carries authoritative UID, version and state. After a
+	// lost response, GetWorker must succeed with the same UID and DRAINING state
+	// before reconciling success; unavailable/missing reads mean unknown. A retry
+	// requires fresh UID/version and still proves emptiness under the bind lock.
+	DrainEmptyWorker(ctx context.Context, in *DrainEmptyWorkerRequest, opts ...grpc.CallOption) (*Worker, error)
 	// List the Actors hosted by a given Worker.
 	ListWorkerActorAssignments(ctx context.Context, in *ListWorkerActorAssignmentsRequest, opts ...grpc.CallOption) (*ListWorkerActorAssignmentsResponse, error)
 	// List Actors.
@@ -424,6 +433,16 @@ func (c *controlClient) DrainWorker(ctx context.Context, in *DrainWorkerRequest,
 	return out, nil
 }
 
+func (c *controlClient) DrainEmptyWorker(ctx context.Context, in *DrainEmptyWorkerRequest, opts ...grpc.CallOption) (*Worker, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Worker)
+	err := c.cc.Invoke(ctx, Control_DrainEmptyWorker_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *controlClient) ListWorkerActorAssignments(ctx context.Context, in *ListWorkerActorAssignmentsRequest, opts ...grpc.CallOption) (*ListWorkerActorAssignmentsResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ListWorkerActorAssignmentsResponse)
@@ -599,6 +618,14 @@ type ControlServer interface {
 	// it. Idempotent; one-way. Deliberately leaves any bound Actor alone.
 	// Returns ABORTED if another write lands on the Worker first; retry.
 	DrainWorker(context.Context, *DrainWorkerRequest) (*Worker, error)
+	// Atomically drains only an empty worker at the caller-observed revision.
+	// ABORTED means stale identity/version; FAILED_PRECONDITION means busy or
+	// inactive. Never fall back to DrainWorker on UNIMPLEMENTED or uncertainty.
+	// The returned Worker carries authoritative UID, version and state. After a
+	// lost response, GetWorker must succeed with the same UID and DRAINING state
+	// before reconciling success; unavailable/missing reads mean unknown. A retry
+	// requires fresh UID/version and still proves emptiness under the bind lock.
+	DrainEmptyWorker(context.Context, *DrainEmptyWorkerRequest) (*Worker, error)
 	// List the Actors hosted by a given Worker.
 	ListWorkerActorAssignments(context.Context, *ListWorkerActorAssignmentsRequest) (*ListWorkerActorAssignmentsResponse, error)
 	// List Actors.
@@ -702,6 +729,9 @@ func (UnimplementedControlServer) DeleteWorker(context.Context, *DeleteWorkerReq
 }
 func (UnimplementedControlServer) DrainWorker(context.Context, *DrainWorkerRequest) (*Worker, error) {
 	return nil, status.Error(codes.Unimplemented, "method DrainWorker not implemented")
+}
+func (UnimplementedControlServer) DrainEmptyWorker(context.Context, *DrainEmptyWorkerRequest) (*Worker, error) {
+	return nil, status.Error(codes.Unimplemented, "method DrainEmptyWorker not implemented")
 }
 func (UnimplementedControlServer) ListWorkerActorAssignments(context.Context, *ListWorkerActorAssignmentsRequest) (*ListWorkerActorAssignmentsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListWorkerActorAssignments not implemented")
@@ -1204,6 +1234,24 @@ func _Control_DrainWorker_Handler(srv interface{}, ctx context.Context, dec func
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Control_DrainEmptyWorker_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DrainEmptyWorkerRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ControlServer).DrainEmptyWorker(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Control_DrainEmptyWorker_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ControlServer).DrainEmptyWorker(ctx, req.(*DrainEmptyWorkerRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _Control_ListWorkerActorAssignments_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(ListWorkerActorAssignmentsRequest)
 	if err := dec(in); err != nil {
@@ -1490,6 +1538,10 @@ var Control_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "DrainWorker",
 			Handler:    _Control_DrainWorker_Handler,
+		},
+		{
+			MethodName: "DrainEmptyWorker",
+			Handler:    _Control_DrainEmptyWorker_Handler,
 		},
 		{
 			MethodName: "ListWorkerActorAssignments",
