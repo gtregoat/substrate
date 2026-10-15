@@ -38,6 +38,7 @@ func (p *Persistence) CreateWorker(ctx context.Context, worker *ateapipb.Worker)
 	}
 
 	created, err := p.writeAndAppendEvent(ctx, store.WorkerEventCreated, func(ctx context.Context, tx pgx.Tx) (*ateapipb.Worker, error) {
+		if err := checkNodeAdmission(ctx, tx, dbWorker.GetNodeName()); err != nil { return nil, err }
 		_, err := tx.Exec(ctx, `
 			INSERT INTO workers (name, uid, version, proto)
 			VALUES ($1, $2, $3, $4)`,
@@ -118,6 +119,9 @@ func (p *Persistence) UpdateWorker(ctx context.Context, name string, preconditio
 		oldMeta := proto.CloneOf(dbWorker.GetMetadata())
 		if err := mutate(dbWorker); err != nil {
 			return nil, err
+		}
+		if dbWorker.GetNodeName() != "" {
+			if err := checkWorkerRetirementMutation(ctx, tx, dbWorker); err != nil { return nil, err }
 		}
 		// Stored metadata is authoritative; discard any metadata edits made by
 		// the closure and derive the next revision from the row we locked.

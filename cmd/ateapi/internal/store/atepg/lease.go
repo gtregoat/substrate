@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+ "strings"
 	"time"
 
 	"github.com/agent-substrate/substrate/cmd/ateapi/internal/store"
@@ -97,8 +98,12 @@ func (p *Persistence) cleanupExpiredLeases(ctx context.Context) error {
 }
 
 func (p *Persistence) acquireLease(ctx context.Context, key, token string, ttl time.Duration) (bool, error) {
+ tx, err := p.pool.Begin(ctx)
+ if err != nil { return false, err }
+ defer tx.Rollback(ctx) //nolint:errcheck // Commit or returned error determines the outcome.
+ if err := lockOwnership(ctx, tx, false); err != nil { return false, err }
 	var returnedKey string
-	err := p.pool.QueryRow(ctx, `
+	err = tx.QueryRow(ctx, `
 		INSERT INTO leases (key, token, expires_at)
 		VALUES ($1, $2, clock_timestamp() + make_interval(secs => $3))
 		ON CONFLICT (key) DO UPDATE
@@ -112,7 +117,14 @@ func (p *Persistence) acquireLease(ctx context.Context, key, token string, ttl t
 		}
 		return false, fmt.Errorf("acquiring lease for %q: %w", key, err)
 	}
-	return true, nil
+ ready, err := ownershipSchemaReady(ctx, tx)
+ if err != nil { return false, err }
+ if ready && strings.HasPrefix(key, "lease:actor:") {
+  if _, err := tx.Exec(ctx, `INSERT INTO worker_node_operations (token, lease_key, node_name) VALUES ($1, $2, '')`, token, key); err != nil { return false, err }
+ }
+ if err := recordLeaseOwnership(ctx, tx, key); err != nil { return false, err }
+ if err := tx.Commit(ctx); err != nil { return false, err }
+ return true, nil
 }
 
 const (
@@ -194,8 +206,15 @@ func (p *Persistence) renewLease(ctx context.Context, key, token string, ttl tim
 }
 
 func (p *Persistence) releaseLease(ctx context.Context, key, token string) error {
-	if _, err := p.pool.Exec(ctx, `DELETE FROM leases WHERE key = $1 AND token = $2`, key, token); err != nil {
-		return fmt.Errorf("releasing lease for %q: %w", key, err)
-	}
-	return nil
+ tx, err := p.pool.Begin(ctx)
+ if err != nil { return err }
+ defer tx.Rollback(ctx) //nolint:errcheck // Commit or returned error determines the outcome.
+ if err := lockOwnership(ctx, tx, false); err != nil { return err }
+ ready, err := ownershipSchemaReady(ctx, tx)
+ if err != nil { return err }
+ if ready {
+  if _, err := tx.Exec(ctx, `DELETE FROM worker_node_operations WHERE lease_key = $1 AND token = $2`, key, token); err != nil { return err }
+ }
+ if _, err := tx.Exec(ctx, `DELETE FROM leases WHERE key = $1 AND token = $2`, key, token); err != nil { return fmt.Errorf("releasing lease for %q: %w", key, err) }
+ return tx.Commit(ctx)
 }

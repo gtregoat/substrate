@@ -27,6 +27,10 @@ import (
 )
 
 func (p *Persistence) CreateActor(ctx context.Context, actor *ateapipb.Actor) (*ateapipb.Actor, error) {
+	tx, err := p.pool.Begin(ctx)
+ if err != nil { return nil, err }
+ defer tx.Rollback(ctx) //nolint:errcheck // Commit or returned error determines the outcome.
+ if err := lockOwnership(ctx, tx, false); err != nil { return nil, err }
 	atespace := actor.GetMetadata().GetAtespace()
 	name := actor.GetMetadata().GetName()
 
@@ -42,7 +46,8 @@ func (p *Persistence) CreateActor(ctx context.Context, actor *ateapipb.Actor) (*
 		return nil, fmt.Errorf("marshaling actor: %w", err)
 	}
 
-	_, err = p.pool.Exec(ctx, `
+	if err := recordActorOwnership(ctx, tx, dbActor); err != nil { return nil, err }
+	_, err = tx.Exec(ctx, `
 		INSERT INTO actors (atespace, name, uid, version, proto)
 		VALUES ($1, $2, $3, $4, $5)`,
 		atespace, name, dbActor.GetMetadata().GetUid(), dbActor.GetMetadata().GetVersion(), protoBytes)
@@ -57,6 +62,7 @@ func (p *Persistence) CreateActor(ctx context.Context, actor *ateapipb.Actor) (*
 		}
 		return nil, fmt.Errorf("inserting actor %s/%s: %w", atespace, name, err)
 	}
+	if err := tx.Commit(ctx); err != nil { return nil, err }
 	return dbActor, nil
 }
 
@@ -77,6 +83,10 @@ func (p *Persistence) GetActor(ctx context.Context, actorRef resources.ActorRef)
 }
 
 func (p *Persistence) UpdateActor(ctx context.Context, actorRef resources.ActorRef, precondition store.Precondition, mutate func(*ateapipb.Actor) error) (*ateapipb.Actor, error) {
+	tx, err := p.pool.Begin(ctx)
+ if err != nil { return nil, err }
+ defer tx.Rollback(ctx) //nolint:errcheck // Commit or returned error determines the outcome.
+ if err := lockOwnership(ctx, tx, false); err != nil { return nil, err }
 	if err := precondition.Validate(); err != nil {
 		return nil, err
 	}
@@ -84,7 +94,7 @@ func (p *Persistence) UpdateActor(ctx context.Context, actorRef resources.ActorR
 	var currentUID string
 	var currentVersion int64
 	var currentBytes []byte
-	if err := p.pool.QueryRow(ctx, `
+	if err := tx.QueryRow(ctx, `
 			SELECT uid, version, proto FROM actors
 			WHERE atespace = $1 AND name = $2`, atespace, name).Scan(&currentUID, &currentVersion, &currentBytes); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -93,6 +103,12 @@ func (p *Persistence) UpdateActor(ctx context.Context, actorRef resources.ActorR
 		return nil, fmt.Errorf("getting actor %s/%s for update: %w", atespace, name, err)
 	}
 
+ ready, err := ownershipSchemaReady(ctx, tx)
+ if err != nil { return nil, err }
+ if ready {
+  raw := &ateapipb.Actor{}
+  if proto.Unmarshal(currentBytes, raw) != nil || ownershipUnknown(raw.ProtoReflect()) { return nil, ownershipRefusal(store.OwnershipUnknown) }
+ }
 	dbActor := &ateapipb.Actor{}
 	if err := unmarshalStored(currentBytes, dbActor); err != nil {
 		return nil, fmt.Errorf("unmarshaling actor for update: %w", err)
@@ -111,11 +127,12 @@ func (p *Persistence) UpdateActor(ctx context.Context, actorRef resources.ActorR
 	// closure and derive the next revision from the state this attempt read.
 	setUpdateMetadata(dbActor.Metadata, oldMeta)
 
+	if err := recordActorOwnership(ctx, tx, dbActor); err != nil { return nil, err }
 	updatedBytes, err := proto.Marshal(dbActor)
 	if err != nil {
 		return nil, fmt.Errorf("marshaling actor: %w", err)
 	}
-	commandTag, err := p.pool.Exec(ctx, `
+	commandTag, err := tx.Exec(ctx, `
 			UPDATE actors
 			SET version = $1, proto = $2
 			WHERE atespace = $3 AND name = $4 AND uid = $5 AND version = $6`,
@@ -129,6 +146,7 @@ func (p *Persistence) UpdateActor(ctx context.Context, actorRef resources.ActorR
 	if commandTag.RowsAffected() != 1 {
 		return nil, fmt.Errorf("updating actor %s/%s affected %d rows, want 1", atespace, name, commandTag.RowsAffected())
 	}
+	if err := tx.Commit(ctx); err != nil { return nil, err }
 	return dbActor, nil
 }
 

@@ -89,6 +89,7 @@ func (p *Persistence) BindActorToWorker(ctx context.Context, workerName string, 
 		if err != nil {
 			return nil, err
 		}
+		if err := recordBindingOwnership(ctx, tx, worker, assignment); err != nil { return nil, err }
 		if worker.Status == nil {
 			worker.Status = &ateapipb.WorkerStatus{}
 		}

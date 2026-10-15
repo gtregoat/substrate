@@ -23,6 +23,7 @@ import (
 	"github.com/agent-substrate/substrate/cmd/ateapi/internal/store"
 	"github.com/agent-substrate/substrate/pkg/proto/ateapipb"
 	"google.golang.org/grpc/codes"
+ "google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 	"k8s.io/apimachinery/pkg/api/operation"
@@ -424,4 +425,36 @@ func (s *RPCService) DrainEmptyWorker(ctx context.Context, req *ateapipb.DrainEm
 		return nil, status.Error(codes.FailedPrecondition, "worker must be empty and ACTIVE or DRAINING")
 	}
 	return worker, err
+}
+
+func (s *ServiceImpl) ProveEmptyDraining(ctx context.Context, expected *ateapipb.Worker) (*ateapipb.ProveEmptyDrainingResponse, error) {
+ return s.store.ProveEmptyDraining(ctx, expected)
+}
+
+func (s *RPCService) ProveEmptyDraining(ctx context.Context, req *ateapipb.ProveEmptyDrainingRequest) (*ateapipb.ProveEmptyDrainingResponse, error) {
+ if errs := Validate_ProveEmptyDrainingRequest(ctx, operation.Operation{Type: operation.Create}, nil, req, nil); len(errs) > 0 {
+  return nil, toGRPCStatusError(errs)
+ }
+ expected := req.GetExpectedWorker()
+ // Worker metadata UID/version are optional for creation; here both are
+ // mandatory caller-observed preconditions. Reuse the strict drain validator.
+ guard := &ateapipb.DrainEmptyWorkerRequest{Worker: &ateapipb.ObjectRef{Name: expected.GetMetadata().GetName(), Atespace: expected.GetMetadata().GetAtespace()}, Uid: expected.GetMetadata().GetUid(), Version: expected.GetMetadata().GetVersion()}
+ if errs := Validate_DrainEmptyWorkerRequest(ctx, operation.Operation{Type: operation.Create}, nil, guard, nil); len(errs) > 0 { return nil, toGRPCStatusError(errs) }
+ proof, err := s.impl.ProveEmptyDraining(ctx, expected)
+ switch {
+ case errors.Is(err, store.ErrNotFound):
+  return nil, status.Error(codes.NotFound, "worker not found; ownership unknown")
+ case errors.Is(err, store.ErrUIDConflict), errors.Is(err, store.ErrVersionConflict):
+  return nil, status.Error(codes.Aborted, "worker identity or version changed; read again")
+ case errors.Is(err, store.ErrPreconditionRequired):
+  return nil, status.Error(codes.InvalidArgument, "worker UID and version required")
+ }
+ var refusal *store.OwnershipRefusal
+ if errors.As(err, &refusal) {
+  st := status.New(codes.FailedPrecondition, refusal.Error())
+  detailed, detailErr := st.WithDetails(&errdetails.ErrorInfo{Reason: refusal.Reason, Domain: "ateapi.worker-ownership"})
+  if detailErr != nil { return nil, st.Err() }
+  return nil, detailed.Err()
+ }
+ return proof, err
 }

@@ -83,6 +83,8 @@ func (p *Persistence) writeAndAppendEvent(ctx context.Context, eventType store.W
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck // no-op once committed
 
+	if err := lockOwnership(ctx, tx, false); err != nil { return nil, err }
+
 	worker, err := fn(ctx, tx)
 	if err != nil {
 		return nil, err
