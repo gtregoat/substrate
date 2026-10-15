@@ -220,42 +220,69 @@ func (p *Persistence) ListWorkers(ctx context.Context, opts store.ListOptions) (
 // DrainEmptyWorker serializes the emptiness proof with BindActorToWorker. The
 // assignment table is authoritative even if allocation accounting is empty.
 func (p *Persistence) DrainEmptyWorker(ctx context.Context, name string, precondition store.Precondition) (*ateapipb.Worker, error) {
- if err := precondition.Validate(); err != nil { return nil, err }
- var observed *ateapipb.Worker
- updated, err := p.writeAndAppendEvent(ctx, store.WorkerEventUpdated, func(ctx context.Context, tx pgx.Tx) (*ateapipb.Worker, error) {
-  worker, err := getWorkerForUpdate(ctx, tx, name)
-  if err != nil { return nil, err }
-  if err := precondition.Check(worker.GetMetadata()); err != nil { return nil, err }
-  var busy bool
-  if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM worker_assignments WHERE worker_name = $1)`, name).Scan(&busy); err != nil { return nil, err }
-  if busy { return nil, store.ErrFailedPrecondition }
-  allocated := worker.GetStatus().GetAllocated()
-  if allocated.GetActors() != 0 || len(allocated.GetResources().GetLimits()) != 0 || len(allocated.ProtoReflect().GetUnknown()) != 0 { return nil, store.ErrFailedPrecondition }
-  // Also fail closed on a recorded Actor pointer, including RESUMING. Binding
-  // must reserve under this row lock before publishing an Actor pointer.
-  rows, err := tx.Query(ctx, `SELECT proto FROM actors`)
-  if err != nil { return nil, err }
-  defer rows.Close()
-  for rows.Next() {
-   var data []byte
-   if err := rows.Scan(&data); err != nil { return nil, err }
-   actor := &ateapipb.Actor{}
-   if err := proto.Unmarshal(data, actor); err != nil { return nil, err }
-   if actor.GetStatus().GetWorkerAssignment().GetWorker().GetName() == name { return nil, store.ErrFailedPrecondition }
-  }
-  if err := rows.Err(); err != nil { return nil, err }
-  rows.Close()
-  switch worker.GetStatus().GetState() {
-  case ateapipb.WorkerState_WORKER_STATE_DRAINING:
-   observed = worker
-   return nil, nil // read-only reconciliation, no event or version bump
-  case ateapipb.WorkerState_WORKER_STATE_ACTIVE:
-  default: return nil, store.ErrFailedPrecondition
-  }
-  worker.Status.State = ateapipb.WorkerState_WORKER_STATE_DRAINING
-  if err := saveWorker(ctx, tx, worker); err != nil { return nil, err }
-  return worker, nil
- })
- if err == nil && updated == nil { return observed, nil }
- return updated, err
+	if err := precondition.Validate(); err != nil {
+		return nil, err
+	}
+	var observed *ateapipb.Worker
+	updated, err := p.writeAndAppendEvent(ctx, store.WorkerEventUpdated, func(ctx context.Context, tx pgx.Tx) (*ateapipb.Worker, error) {
+		worker, err := getWorkerForUpdate(ctx, tx, name)
+		if err != nil {
+			return nil, err
+		}
+		if err := precondition.Check(worker.GetMetadata()); err != nil {
+			return nil, err
+		}
+		var busy bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM worker_assignments WHERE worker_name = $1)`, name).Scan(&busy); err != nil {
+			return nil, err
+		}
+		if busy {
+			return nil, store.ErrFailedPrecondition
+		}
+		allocated := worker.GetStatus().GetAllocated()
+		if allocated.GetActors() != 0 || len(allocated.GetResources().GetLimits()) != 0 || len(allocated.ProtoReflect().GetUnknown()) != 0 {
+			return nil, store.ErrFailedPrecondition
+		}
+		// Also fail closed on a recorded Actor pointer, including RESUMING. Binding
+		// must reserve under this row lock before publishing an Actor pointer.
+		rows, err := tx.Query(ctx, `SELECT proto FROM actors`)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var data []byte
+			if err := rows.Scan(&data); err != nil {
+				return nil, err
+			}
+			actor := &ateapipb.Actor{}
+			if err := proto.Unmarshal(data, actor); err != nil {
+				return nil, err
+			}
+			if actor.GetStatus().GetWorkerAssignment().GetWorker().GetName() == name {
+				return nil, store.ErrFailedPrecondition
+			}
+		}
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+		rows.Close()
+		switch worker.GetStatus().GetState() {
+		case ateapipb.WorkerState_WORKER_STATE_DRAINING:
+			observed = worker
+			return nil, nil // read-only reconciliation, no event or version bump
+		case ateapipb.WorkerState_WORKER_STATE_ACTIVE:
+		default:
+			return nil, store.ErrFailedPrecondition
+		}
+		worker.Status.State = ateapipb.WorkerState_WORKER_STATE_DRAINING
+		if err := saveWorker(ctx, tx, worker); err != nil {
+			return nil, err
+		}
+		return worker, nil
+	})
+	if err == nil && updated == nil {
+		return observed, nil
+	}
+	return updated, err
 }
