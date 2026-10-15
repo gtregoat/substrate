@@ -369,3 +369,66 @@ func TestDrainEmptyWorker_AllocationAndUnknown(t *testing.T) {
 		}
 	}
 }
+
+// Unknown allocation fields are persisted future resource dimensions, not an
+// empty reservation. Nil remains the canonical zero-allocation representation.
+func TestDrainEmptyWorker_UnknownNestedAllocation(t *testing.T) {
+	for _, unknown := range []bool{true, false} {
+		t.Run(fmt.Sprint("unknown-resources-", unknown), func(t *testing.T) {
+			p := setupPostgresPersistence(t)
+			ctx := context.Background()
+			createTestAtespace(t, p, "unknown-allocation-team")
+			actor, err := p.CreateActor(ctx, &ateapipb.Actor{Metadata: &ateapipb.ResourceMetadata{Atespace: "unknown-allocation-team", Name: "unassigned"}, Status: &ateapipb.ActorStatus{State: ateapipb.ActorState_ACTOR_STATE_SUSPENDED}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var allocated *ateapipb.WorkerResources
+			if unknown {
+				allocationResources := &ateapipb.Resources{}
+				// Field 100, varint 1: a future dimension unknown to this server.
+				allocationResources.ProtoReflect().SetUnknown([]byte{0xa0, 0x06, 0x01})
+				allocated = &ateapipb.WorkerResources{Resources: allocationResources}
+			}
+			worker, err := p.CreateWorker(ctx, &ateapipb.Worker{Metadata: &ateapipb.ResourceMetadata{Name: "unknown-allocation-worker"}, Status: &ateapipb.WorkerStatus{State: ateapipb.WorkerState_WORKER_STATE_ACTIVE, Allocated: allocated}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Read from PostgreSQL so the unknown bytes must survive serialization.
+			before, err := p.GetWorker(ctx, worker.GetMetadata().GetName())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !proto.Equal(worker, before) {
+				t.Fatal("persisted worker differs from created worker")
+			}
+			if unknown && (len(before.GetStatus().GetAllocated().GetResources().GetLimits()) != 0 || len(before.GetStatus().GetAllocated().GetResources().ProtoReflect().GetUnknown()) == 0) {
+				t.Fatal("fixture must contain only nested unknown allocation")
+			}
+			drained, drainErr := p.DrainEmptyWorker(ctx, worker.GetMetadata().GetName(), store.PreconditionFrom(before))
+			after, err := p.GetWorker(ctx, worker.GetMetadata().GetName())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if unknown {
+				if !errors.Is(drainErr, store.ErrFailedPrecondition) || drained != nil {
+					t.Fatalf("unknown allocation accepted: %v %v", drained, drainErr)
+				}
+				if !proto.Equal(before, after) {
+					t.Fatalf("refused drain mutated worker: before %v after %v", before, after)
+				}
+			} else {
+				if drainErr != nil || drained.GetStatus().GetState() != ateapipb.WorkerState_WORKER_STATE_DRAINING || after.GetStatus().GetAllocated() != nil || after.GetMetadata().GetUid() != before.GetMetadata().GetUid() || after.GetMetadata().GetVersion() != before.GetMetadata().GetVersion()+1 {
+					t.Fatalf("empty nil allocation refused or changed identity/allocation: %v %v", drained, drainErr)
+				}
+			}
+			actorAfter, err := p.GetActor(ctx, resources.ActorRefFromActor(actor))
+			if err != nil || !proto.Equal(actor, actorAfter) {
+				t.Fatalf("actor mutated: %v %v", actorAfter, err)
+			}
+			assignments, err := p.ListWorkerAssignments(ctx, worker.GetMetadata().GetName(), store.ListOptions{})
+			if err != nil || len(assignments.Items) != 0 {
+				t.Fatalf("assignments mutated: %v %v", assignments, err)
+			}
+		})
+	}
+}

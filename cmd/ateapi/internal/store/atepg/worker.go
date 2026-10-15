@@ -240,7 +240,7 @@ func (p *Persistence) DrainEmptyWorker(ctx context.Context, name string, precond
 			return nil, store.ErrFailedPrecondition
 		}
 		allocated := worker.GetStatus().GetAllocated()
-		if allocated.GetActors() != 0 || len(allocated.GetResources().GetLimits()) != 0 || len(allocated.ProtoReflect().GetUnknown()) != 0 {
+		if allocated.GetActors() != 0 || len(allocated.GetResources().GetLimits()) != 0 || len(allocated.ProtoReflect().GetUnknown()) != 0 || len(allocated.GetResources().ProtoReflect().GetUnknown()) != 0 {
 			return nil, store.ErrFailedPrecondition
 		}
 		// Also fail closed on a recorded Actor pointer, including RESUMING. Binding
