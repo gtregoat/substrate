@@ -32,6 +32,7 @@ import (
 	"github.com/agent-substrate/substrate/cmd/ateapi/internal/store/storetest"
 	"github.com/agent-substrate/substrate/pkg/proto/ateapipb"
 	"github.com/google/go-cmp/cmp"
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
@@ -1124,6 +1125,17 @@ func TestDrainEmptyWorker_ValidationAndAuthentication(t *testing.T) {
 	if _, err := client.DrainEmptyWorker(authenticated, crossNamespace); status.Code(err) != codes.InvalidArgument {
 		t.Fatalf("authenticated namespace validation: %v", err)
 	}
+	proofWorker := validWorker(apiWorkerName, withWorkerStatus())
+	proofWorker.Metadata.Uid = apiOtherWorkerName
+	proofWorker.Metadata.Version = 1
+	proofRequest := &ateapipb.ProveEmptyDrainingRequest{ExpectedWorker: proofWorker}
+	if proof, err := client.ProveEmptyDraining(ctx, proofRequest); proof != nil || status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("unauthenticated ownership proof: %v %v", proof, err)
+	}
+	proofRequest.ExpectedWorker.Metadata.Atespace = "other"
+	if proof, err := client.ProveEmptyDraining(authenticated, proofRequest); proof != nil || status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("cross-namespace ownership proof: %v %v", proof, err)
+	}
 	missingGuards := &ateapipb.DrainEmptyWorkerRequest{Worker: workerRef(apiWorkerName)}
 	if _, err := client.DrainEmptyWorker(authenticated, missingGuards); status.Code(err) != codes.InvalidArgument {
 		t.Fatalf("authenticated missing guards: %v", err)
@@ -1146,5 +1158,64 @@ func TestDrainEmptyWorker_RPC(t *testing.T) {
 	again, err := svc.DrainEmptyWorker(ctx, req)
 	if err != nil || !proto.Equal(again, drained) {
 		t.Fatalf("reconcile: %v %v", again, err)
+	}
+}
+
+func TestProveEmptyDraining_Validation(t *testing.T) {
+	svc := &RPCService{} // Invalid input must fail before storage.
+	valid := validWorker(apiWorkerName, withWorkerStatus(func(s *ateapipb.WorkerStatus) { s.State = ateapipb.WorkerState_WORKER_STATE_DRAINING }))
+	valid.Metadata.Uid = apiOtherWorkerName
+	valid.Metadata.Version = 1
+	for _, mutate := range []func(*ateapipb.ProveEmptyDrainingRequest){
+		func(r *ateapipb.ProveEmptyDrainingRequest) { r.ExpectedWorker = nil },
+		func(r *ateapipb.ProveEmptyDrainingRequest) { r.ExpectedWorker.Metadata.Name = "" },
+		func(r *ateapipb.ProveEmptyDrainingRequest) { r.ExpectedWorker.Metadata.Atespace = "other" },
+		func(r *ateapipb.ProveEmptyDrainingRequest) { r.ExpectedWorker.Metadata.Uid = "" },
+		func(r *ateapipb.ProveEmptyDrainingRequest) { r.ExpectedWorker.Metadata.Uid = "invalid" },
+		func(r *ateapipb.ProveEmptyDrainingRequest) { r.ExpectedWorker.Metadata.Version = 0 },
+		func(r *ateapipb.ProveEmptyDrainingRequest) { r.ExpectedWorker.Metadata.Version = -1 },
+		func(r *ateapipb.ProveEmptyDrainingRequest) { r.ExpectedWorker.NodeName = "" },
+		func(r *ateapipb.ProveEmptyDrainingRequest) { r.ExpectedWorker.WorkerPodUid = "invalid" },
+	} {
+		req := &ateapipb.ProveEmptyDrainingRequest{ExpectedWorker: proto.CloneOf(valid)}
+		mutate(req)
+		if proof, err := svc.ProveEmptyDraining(context.Background(), req); proof != nil || status.Code(err) != codes.InvalidArgument {
+			t.Fatalf("invalid request: %v %v", proof, err)
+		}
+	}
+}
+
+func TestProveEmptyDraining_NativeRefusals(t *testing.T) {
+	ctx := context.Background()
+	svc, persistence := newWorkerAPIService(t)
+	worker := seedAPIWorker(t, ctx, persistence, validWorker(apiWorkerName))
+	assertRefusal := func(expected *ateapipb.Worker, reason string) {
+		t.Helper()
+		proof, err := svc.ProveEmptyDraining(ctx, &ateapipb.ProveEmptyDrainingRequest{ExpectedWorker: expected})
+		if proof != nil || status.Code(err) != codes.FailedPrecondition {
+			t.Fatalf("proof=%v err=%v", proof, err)
+		}
+		for _, detail := range status.Convert(err).Details() {
+			if info, ok := detail.(*errdetails.ErrorInfo); ok && info.Domain == "ateapi.worker-ownership" && info.Reason == reason {
+				return
+			}
+		}
+		t.Fatalf("missing typed reason %q: %v", reason, status.Convert(err).Details())
+	}
+	assertRefusal(worker, store.OwnershipNotDraining)
+	drained, err := svc.DrainEmptyWorker(ctx, &ateapipb.DrainEmptyWorkerRequest{Worker: workerRef(apiWorkerName), Uid: worker.GetMetadata().GetUid(), Version: worker.GetMetadata().GetVersion()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertRefusal(drained, store.OwnershipStabilityUnproven)
+	drifted := proto.CloneOf(drained)
+	drifted.NodeName = "other-node"
+	assertRefusal(drifted, store.OwnershipMappingChanged)
+	if proof, err := svc.ProveEmptyDraining(ctx, &ateapipb.ProveEmptyDrainingRequest{ExpectedWorker: worker}); proof != nil || status.Code(err) != codes.Aborted {
+		t.Fatalf("stale proof: %v %v", proof, err)
+	}
+	after, err := persistence.GetWorker(ctx, apiWorkerName)
+	if err != nil || !proto.Equal(after, drained) {
+		t.Fatalf("proof mutated worker: %v %v", after, err)
 	}
 }
