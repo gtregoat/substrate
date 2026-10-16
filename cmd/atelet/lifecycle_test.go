@@ -118,7 +118,9 @@ func serveFakeAteom(t *testing.T, f *fakeAteom) {
 // TestLocalSnapshotGC walks an actor through
 // run -> pause -> resume -> terminate over atelet's RPC surface and ensures that
 // the local snapshot is garbage collected after the actor is terminated.
-func TestLocalSnapshotGC(t *testing.T)         { testLocalSnapshotGC(t, 0) }
+func TestLocalSnapshotGC(t *testing.T)                 { testLocalSnapshotGC(t, 0) }
+func TestNativeExternalCheckpointReceipt(t *testing.T) { testLocalSnapshotGC(t, 3) }
+
 func TestNativeReceiptsLifecycle(t *testing.T) { testLocalSnapshotGC(t, 1) }
 
 func TestNativeEffectBeforeTerminalReceipt(t *testing.T) { testLocalSnapshotGC(t, 2) }
@@ -168,6 +170,9 @@ func testLocalSnapshotGC(t *testing.T, receipts int) {
 	if receipts != 0 {
 		receiptDriver = newReceiptLifecycleDriver(t, s)
 		receiptDriver.failTerminationReceipt = receipts == 2
+		if receipts == 3 {
+			s.gcsClient = &recordingObjectStorage{}
+		}
 		client = receiptDriver
 	}
 	spec := &ateletpb.WorkloadSpec{
@@ -231,6 +236,16 @@ func testLocalSnapshotGC(t *testing.T, receipts int) {
 		t.Fatalf("restore staged %q for ateom, want the pause snapshot's %q", got, "guest-memory")
 	}
 
+	if receipts == 3 {
+		if _, err := client.Checkpoint(ctx, &ateletpb.CheckpointRequest{Atespace: atespace, ActorName: actorName, ActorUid: actorUID, ActorTemplateAtespace: "default", ActorTemplateName: "counter", TargetAteomUid: ateomUID, Spec: spec, Scope: ateletpb.SnapshotScope_SNAPSHOT_SCOPE_FULL, Type: ateletpb.CheckpointType_CHECKPOINT_TYPE_EXTERNAL, Config: &ateletpb.CheckpointRequest_ExternalConfig{ExternalConfig: &ateletpb.ExternalCheckpointConfiguration{SnapshotUri: pausedSnapshotURI}}}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Stat(ateompath.LocalCheckpointsDir(actorUID)); !os.IsNotExist(err) {
+			t.Fatalf("external checkpoint retained superseded local data: %v", err)
+		}
+		receiptDriver.checkRecovery(t, s)
+		return
+	}
 	// Terminate: the actor is gone, and so should its snapshot be.
 	if _, err := client.Terminate(ctx, &ateletpb.TerminateRequest{
 		Atespace:              atespace,

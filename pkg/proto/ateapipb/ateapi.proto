@@ -651,7 +651,7 @@ message NativeOperationOwnership {
   // Serialized atelet ExecuteOperationRequest. Contains its once-minted token,
   // exact request and target incarnation; committed before dispatch.
   // +k8s:optional
-  bytes invocation = 8;
+  bytes invocation = 8 [ debug_redact = true ];
 }
 
 // ActorCrash describes the failure that moved an Actor to CRASHED.

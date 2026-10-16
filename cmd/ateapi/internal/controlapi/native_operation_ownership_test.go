@@ -25,6 +25,7 @@ import (
 	"github.com/agent-substrate/substrate/internal/proto/ateletpb"
 	"github.com/agent-substrate/substrate/internal/resources"
 	"github.com/agent-substrate/substrate/pkg/proto/ateapipb"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
@@ -174,5 +175,81 @@ func TestCompletedNativeInvocationRequiresExactTerminalEvidence(t *testing.T) {
 	}
 	if err := completedNativeInvocation(invocation, nil); status.Code(err) != codes.FailedPrecondition {
 		t.Fatalf("nil receipt: %v", err)
+	}
+}
+
+type receiptNativeClient struct {
+	ateletpb.AteomHerderClient
+	executeErr error
+	lookupErr  error
+	result     *ateletpb.OperationResult
+	runs       int
+}
+
+func (c *receiptNativeClient) ExecuteOperation(context.Context, *ateletpb.ExecuteOperationRequest, ...grpc.CallOption) (*ateletpb.OperationResult, error) {
+	return c.result, c.executeErr
+}
+func (c *receiptNativeClient) GetOperation(context.Context, *ateletpb.GetOperationRequest, ...grpc.CallOption) (*ateletpb.OperationResult, error) {
+	return c.result, c.lookupErr
+}
+func (c *receiptNativeClient) Run(context.Context, *ateletpb.RunRequest, ...grpc.CallOption) (*ateletpb.RunResponse, error) {
+	c.runs++
+	return &ateletpb.RunResponse{}, nil
+}
+
+func TestNativeInvocationLostACKAndCapabilityAbsence(t *testing.T) {
+	worker := validWorker(apiWorkerName)
+	worker.Metadata.Uid = "worker-uid"
+	worker.Metadata.Version = 1
+	req := &ateletpb.RunRequest{Atespace: "team", ActorName: "actor", ActorUid: "actor-uid", TargetAteomUid: worker.GetWorkerPodUid()}
+	b, err := (proto.MarshalOptions{Deterministic: true}).Marshal(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := sha256.Sum256(b)
+	invocation := &ateletpb.ExecuteOperationRequest{OperationId: "persisted-operation-id", WorkerUid: worker.GetMetadata().GetUid(), WorkerPodUid: worker.GetWorkerPodUid(), Request: &ateletpb.ExecuteOperationRequest_Run{Run: req}}
+	encoded, err := (proto.MarshalOptions{Deterministic: true}).Marshal(invocation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wireHash := sha256.Sum256(encoded)
+	actor := &ateapipb.Actor{Metadata: &ateapipb.ResourceMetadata{Atespace: "team", Name: "actor", Uid: "actor-uid"}, Status: &ateapipb.ActorStatus{State: ateapipb.ActorState_ACTOR_STATE_RESUMING, WorkerAssignment: workerAssignmentFrom(worker), PendingNativeOperation: &ateapipb.NativeOperationOwnership{Operation: "run", SourceWorker: worker, Assignment: workerAssignmentFrom(worker), RequestDigest: hex.EncodeToString(h[:]), Invocation: encoded}}}
+	success := &ateletpb.OperationResult{OperationId: invocation.OperationId, RequestSha256: hex.EncodeToString(wireHash[:]), State: ateletpb.OperationState_OPERATION_STATE_SUCCEEDED}
+	for _, tc := range []struct {
+		name                  string
+		executeErr, lookupErr error
+		result                *ateletpb.OperationResult
+		wantSuccess           bool
+	}{
+		{name: "terminal ACK", result: success, wantSuccess: true},
+		{name: "lost ACK recovered", executeErr: status.Error(codes.Unavailable, "lost response"), result: success, wantSuccess: true},
+		{name: "old runtime", executeErr: status.Error(codes.Unimplemented, "old runtime"), lookupErr: status.Error(codes.Unimplemented, "old runtime")},
+		{name: "missing receipt", result: &ateletpb.OperationResult{OperationId: invocation.OperationId, RequestSha256: success.RequestSha256, State: ateletpb.OperationState_OPERATION_STATE_MISSING}},
+		{name: "unresolved receipt", result: &ateletpb.OperationResult{OperationId: invocation.OperationId, RequestSha256: success.RequestSha256, State: ateletpb.OperationState_OPERATION_STATE_UNRESOLVED}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			before := proto.CloneOf(actor)
+			client := &receiptNativeClient{executeErr: tc.executeErr, lookupErr: tc.lookupErr, result: tc.result}
+			err := (&ActorWorkflow{}).invokeNative(t.Context(), client, actor, req)
+			if (err == nil) != tc.wantSuccess {
+				t.Fatalf("unexpected settlement: %v", err)
+			}
+			if client.runs != 0 || !proto.Equal(before, actor) {
+				t.Fatal("additive call fell back or discarded ownership")
+			}
+		})
+	}
+	for _, mutate := range []func(*ateapipb.Actor){
+		func(a *ateapipb.Actor) { a.Metadata.Uid = "replaced-actor" },
+		func(a *ateapipb.Actor) { a.Metadata.Name = "other-actor" },
+		func(a *ateapipb.Actor) { a.Status.PendingNativeOperation.Operation = "restore" },
+		func(a *ateapipb.Actor) { a.Status.PendingNativeOperation.SourceWorker.Metadata.Uid = "replaced-worker" },
+		func(a *ateapipb.Actor) { a.Status.PendingNativeOperation.Assignment.WorkerPodUid = "replaced-pod" },
+	} {
+		changed := proto.CloneOf(actor)
+		mutate(changed)
+		if _, err := nativeInvocation(changed); err == nil {
+			t.Fatalf("incompatible invocation accepted: %v", changed)
+		}
 	}
 }

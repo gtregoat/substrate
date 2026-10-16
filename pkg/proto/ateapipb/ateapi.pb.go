@@ -7634,7 +7634,7 @@ const file_pkg_proto_ateapipb_ateapi_proto_rawDesc = "" +
 	"\x1fin_progress_local_snapshot_name\x18\b \x01(\tR\x1binProgressLocalSnapshotName\x12(\n" +
 	"\x05crash\x18\t \x01(\v2\x12.ateapi.ActorCrashR\x05crash\x12Z\n" +
 	"\x18pending_native_operation\x18\n" +
-	" \x01(\v2 .ateapi.NativeOperationOwnershipR\x16pendingNativeOperation\"\xfb\x02\n" +
+	" \x01(\v2 .ateapi.NativeOperationOwnershipR\x16pendingNativeOperation\"\x80\x03\n" +
 	"\x18NativeOperationOwnership\x123\n" +
 	"\rsource_worker\x18\x01 \x01(\v2\x0e.ateapi.WorkerR\fsourceWorker\x128\n" +
 	"\n" +
@@ -7644,9 +7644,9 @@ const file_pkg_proto_ateapipb_ateapi_proto_rawDesc = "" +
 	"\toperation\x18\x04 \x01(\tR\toperation\x12.\n" +
 	"\x13local_snapshot_name\x18\x05 \x01(\tR\x11localSnapshotName\x12!\n" +
 	"\fsnapshot_uri\x18\x06 \x01(\tR\vsnapshotUri\x12%\n" +
-	"\x0erequest_digest\x18\a \x01(\tR\rrequestDigest\x12\x1e\n" +
+	"\x0erequest_digest\x18\a \x01(\tR\rrequestDigest\x12#\n" +
 	"\n" +
-	"invocation\x18\b \x01(\fR\n" +
+	"invocation\x18\b \x01(\fB\x03\x80\x01\x01R\n" +
 	"invocation\"a\n" +
 	"\n" +
 	"ActorCrash\x12\x18\n" +

@@ -213,3 +213,14 @@ checks remains required. Source coverage is not evidence that these ran. Truly
 unknown native completion still requires exact-operation settlement capability;
 the retained durable ownership/refusal behavior must not be weakened to recover
 liveness or to obtain an empty proof.
+
+
+## Additive native operation recovery
+
+See [the current receipt implementation and remaining uncertainty](worker-retirement-evidence-gap.md).
+Enforced lifecycle dispatch persists an exact invocation before effects and can
+reconcile durable terminal evidence after ACK/publication loss. Acceptance
+without terminal evidence still blocks ownership proof; missing receipt,
+transport failure, filesystem absence and manifest presence are not success.
+Old native runtimes retain uncertainty under enforcement without fallback.
+The consumer-retention rollout and default-off prerequisites above still apply.
