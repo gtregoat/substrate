@@ -155,6 +155,8 @@ type actorWorkflowStore interface {
 	GetWorker(ctx context.Context, name string) (*ateapipb.Worker, error)
 	UpdateWorker(ctx context.Context, name string, precondition store.Precondition, mutate func(toUpdate *ateapipb.Worker) error) (*ateapipb.Worker, error)
 	BindActorToWorker(ctx context.Context, workerName string, assignment *ateapipb.ActorAssignment, admit func(*ateapipb.Worker) error) error
+	// CheckWorkerAssignment validates an existing reservation under the worker lock, without writes.
+	CheckWorkerAssignment(ctx context.Context, workerName, actorUID string, admit func(*ateapipb.Worker) error) (*ateapipb.Worker, error)
 	ReleaseActorFromWorker(ctx context.Context, workerName string, actorUID string) (*ateapipb.Worker, error)
 	GetWorkerAssignment(ctx context.Context, workerName, actorUID string) (*ateapipb.ActorAssignment, error)
 	FindWorkerHostingActor(ctx context.Context, actorUID string) (string, error)

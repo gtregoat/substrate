@@ -242,11 +242,13 @@ type Interface interface {
 	// admit decides whether the Worker will take the Actor, and runs against the
 	// Worker as it stands with its row locked, so the answer cannot go stale
 	// between the check and the bind. Returning an error from it refuses the
-	// bind and is returned unchanged. It is consulted only for a new binding: an
-	// Actor already on this Worker is already counted against it.
+	// bind and is returned unchanged. Rebind also runs admission with the old
+	// reservation subtracted, so it neither double counts nor bypasses eligibility.
 	//
 	// ErrNotFound if the Worker is gone.
 	BindActorToWorker(ctx context.Context, workerName string, assignment *ateapipb.ActorAssignment, admit func(*ateapipb.Worker) error) error
+	// CheckWorkerAssignment validates an existing reservation under the worker lock, without writes.
+	CheckWorkerAssignment(ctx context.Context, workerName, actorUID string, admit func(*ateapipb.Worker) error) (*ateapipb.Worker, error)
 
 	// ReleaseActorFromWorker removes an assignment and updates allocation,
 	// returning the Worker as it now stands so the caller can feed the

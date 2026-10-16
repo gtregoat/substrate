@@ -18,6 +18,8 @@ import (
 	"context"
 	"strings"
 	"testing"
+
+	"github.com/spf13/pflag"
 )
 
 func TestConnectStoreRequiresPostgresConnectionString(t *testing.T) {
@@ -30,5 +32,12 @@ func TestConnectStoreRequiresPostgresConnectionString(t *testing.T) {
 	_, err := connectStore(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "--postgres-connection-string is required") {
 		t.Fatalf("connectStore() error = %v, want missing-connection-string error", err)
+	}
+}
+
+func TestWorkerProtectionFlagDefaultsOff(t *testing.T) {
+	flag := pflag.Lookup("require-worker-protection")
+	if flag == nil || flag.DefValue != "false" || *requireWorkerProtection {
+		t.Fatal("protection enforcement must be explicitly enabled")
 	}
 }

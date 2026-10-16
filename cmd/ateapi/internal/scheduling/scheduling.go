@@ -73,7 +73,7 @@ type WorkerSource interface {
 
 type scheduler struct {
 	candidateAdmission func(context.Context, *ateapipb.Worker) error
-	source WorkerSource
+	source             WorkerSource
 	// intn returns a uniformly distributed random value in [0,n).
 	// Defaults to the global math/rand source
 	intn func(n int) int

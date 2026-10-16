@@ -153,3 +153,57 @@ lost ACK/timeout, settlement write/read uncertainty, bounded same-origin CAS
 reconciliation, lost settlement ACK, successful cleanup and cleanup retry after
 a positive ACK. These are source tests until actually executed with the required
 PG/race harness.
+
+### Allocation prerequisite and rollout
+
+Ateapi supports opt-in `--require-worker-protection=true`. The existing Helm
+`ateApi.extraArgs` passes this argument to the API container; its default empty
+list and the binary's default `false` preserve existing installations. This
+source job does not enable it or change deployment configuration or permissions.
+All serving API replicas must enforce the gate before cleanup can be authorized.
+
+When enabled, placement considers independently protected siblings and repeats
+admission under BindActorToWorker's worker row lock, for both new claims and
+rebinds. RESUMING retries use CheckWorkerAssignment under that same lock without
+writing allocations or assignments. Uncertain protection does not crash an actor,
+release a reservation, or delete anything. Registration may still publish ACTIVE:
+ACTIVE alone is no longer sufficient to allocate when enforcement is enabled.
+This deliberately covers pre-existing records without requiring a workersync
+startup migration. An existing claim encountered during scheduling must also
+pass the gate before any stale-claim release decision.
+
+The authority is a direct Kubernetes Pod GET, bounded by two seconds and the
+request deadline, using the existing API client and read-only Pod permission.
+It must match namespace, name, UID, WorkerPool label, node and IP on a qualified
+ACTIVE worker. Missing/unknown worker metadata, unavailable reads, replacement,
+deletion, terminal phase or missing readiness refuse. Required metadata is
+`karpenter.sh/do-not-disrupt=true`, `goat.tregoat.eu/actor-active=true`, and
+`controller.kubernetes.io/pod-deletion-cost=1000`. The API neither patches these
+fields nor treats cached registration or an asserted boolean as proof. Candidate
+selection is advisory; the locked check is authoritative.
+
+This composes with the consumer's existing release protocol, not arbitrary
+metadata mutation: only exact-incarnation DRAINING plus the final ownership
+proof may permit protection removal. If bind wins the worker lock, its committed
+assignment blocks drain/proof. If drain wins, the one-way state rejects admission.
+A retained retry reservation also blocks empty proof. Out-of-band protection
+removal is not authorized by this capability.
+
+Safe rollout order (owner delivery requirements, not local test completion):
+
+1. Deploy the admission capability with cleanup disabled, then enable enforcement
+   on all serving replicas through the authorized delivery process.
+2. Verify every creation template supplies all protection inputs before admission.
+3. Protect existing Pods using exact namespace/name/UID identities, retaining
+   protection for ACTIVE, unknown and terminal/local-data dependencies.
+4. Verify actual eligibility: unprotected old/new Pods refuse without losing
+   reservations, and the same protected exact Pods and independent siblings admit.
+5. Only then independently authorize consumer cleanup after its node-safety,
+   cooldown, identity and final-proof checks are verified. No live flag, mutation,
+   rollout or cleanup authorization follows from this source implementation.
+
+Execution of new PG/race tests, controller checks, Helm rendering and all original
+checks remains required. Source coverage is not evidence that these ran. Truly
+unknown native completion still requires exact-operation settlement capability;
+the retained durable ownership/refusal behavior must not be weakened to recover
+liveness or to obtain an empty proof.

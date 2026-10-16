@@ -416,3 +416,22 @@ func TestAppliesIgnoresRoom(t *testing.T) {
 
 // firstIntn always picks the first candidate, making Schedule deterministic.
 func firstIntn(int) int { return 0 }
+
+func TestCandidateAdmissionKeepsProtectedSiblingAllocatable(t *testing.T) {
+	fleet := fleet{
+		worker("unprotected", "gvisor", "node-a", nil),
+		worker("protected", "gvisor", "node-a", nil),
+	}
+	calls := 0
+	s := New(fleet, WithIntn(func(int) int { return 0 }), WithCandidateAdmission(func(ctx context.Context, w *ateapipb.Worker) error {
+		calls++
+		if w.GetWorkerPod() == "unprotected" {
+			return errors.New("protection unknown")
+		}
+		return nil
+	}))
+	got, err := s.Schedule(context.Background(), Constraints{SandboxClass: "gvisor"})
+	if err != nil || got.GetWorkerPod() != "protected" || calls != 2 {
+		t.Fatalf("protected sibling blocked: got=%v calls=%d err=%v", got, calls, err)
+	}
+}

@@ -67,8 +67,9 @@ const maxRPCDeadline = 10 * time.Minute
 
 const minResyncInterval = 250 * time.Millisecond
 
+var requireWorkerProtection = pflag.Bool("require-worker-protection", false, "Require live exact-Pod disruption protection before allocation. Enable before authorizing cleanup.")
+
 var (
-	requireWorkerProtection = pflag.Bool("require-worker-protection", false, "Require live exact-Pod disruption protection before allocation. Enable before authorizing cleanup.")
 	listenAddr           = pflag.String("grpc-listen-addr", ":443", "Address and port the gRPC server should listen on.")
 	metricsListenAddr    = pflag.String("metrics-listen-addr", ":9090", "Address and port the prometheus metrics server should listen on.")
 	grpcServerCredBundle = pflag.String("grpc-server-cred-bundle", "", "File with the server TLS credential bundle.")
