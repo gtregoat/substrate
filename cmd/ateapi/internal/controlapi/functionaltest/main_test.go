@@ -118,6 +118,11 @@ type FakeAteletServer struct {
 	CheckpointCalled  bool
 	CheckpointRequest *ateletpb.CheckpointRequest
 	FailCheckpoint    error
+	// Fault/barrier controls surround accepted local work, so a transport
+	// error after acceptance is distinguishable in tests from an early error.
+	BeforeCheckpoint        func(context.Context, *ateletpb.CheckpointRequest) error
+	FailCheckpointAfterWork error
+	LocalCheckpoints        map[string]bool
 
 	RestoreCalled  bool
 	RestoreRequest *ateletpb.RestoreRequest
@@ -127,6 +132,7 @@ type FakeAteletServer struct {
 	UploadCalled  bool
 	UploadRequest *ateletpb.UploadPausedCheckpointRequest
 	FailUpload    error
+	BeforeUpload  func(context.Context, *ateletpb.UploadPausedCheckpointRequest) error
 
 	TerminateCalled  bool
 	TerminateRequest *ateletpb.TerminateRequest
@@ -170,6 +176,9 @@ func (f *FakeAteletServer) Reset() {
 	f.CheckpointCalled = false
 	f.CheckpointRequest = nil
 	f.FailCheckpoint = nil
+	f.BeforeCheckpoint = nil
+	f.FailCheckpointAfterWork = nil
+	f.LocalCheckpoints = nil
 
 	f.RestoreCalled = false
 	f.RestoreRequest = nil
@@ -179,6 +188,7 @@ func (f *FakeAteletServer) Reset() {
 	f.UploadCalled = false
 	f.UploadRequest = nil
 	f.FailUpload = nil
+	f.BeforeUpload = nil
 
 	f.TerminateCalled = false
 	f.TerminateRequest = nil
@@ -193,6 +203,11 @@ func (f *FakeAteletServer) UploadPausedCheckpoint(ctx context.Context, req *atel
 
 	f.UploadCalled = true
 	f.UploadRequest = proto.Clone(req).(*ateletpb.UploadPausedCheckpointRequest)
+	if f.BeforeUpload != nil {
+		if err := f.BeforeUpload(ctx, req); err != nil {
+			return nil, err
+		}
+	}
 	if f.FailUpload != nil {
 		return nil, f.FailUpload
 	}
@@ -221,10 +236,24 @@ func (f *FakeAteletServer) Checkpoint(ctx context.Context, req *ateletpb.Checkpo
 
 	f.CheckpointCalled = true
 	f.CheckpointRequest = proto.Clone(req).(*ateletpb.CheckpointRequest)
+	if f.BeforeCheckpoint != nil {
+		if err := f.BeforeCheckpoint(ctx, req); err != nil {
+			return nil, err
+		}
+	}
 	if f.FailCheckpoint != nil {
 		return nil, f.FailCheckpoint
 	}
 
+	if name := req.GetLocalConfig().GetSnapshotName(); name != "" {
+		if f.LocalCheckpoints == nil {
+			f.LocalCheckpoints = make(map[string]bool)
+		}
+		f.LocalCheckpoints[name] = true
+	}
+	if f.FailCheckpointAfterWork != nil {
+		return nil, f.FailCheckpointAfterWork
+	}
 	if err := f.writeSnapshot(req.GetExternalConfig().GetSnapshotUri()); err != nil {
 		return nil, err
 	}

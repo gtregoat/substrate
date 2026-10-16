@@ -218,10 +218,9 @@ func (w *WorkerWorkflow) releaseBoundActor(ctx context.Context, worker *ateapipb
 			toUpdate.Status.Crash = newActorCrash(opName, crashMessageWorkerPodGone)
 		}
 		toUpdate.Status.WorkerAssignment = nil
-		// Local in-progress checkpoint dies with the worker: it lived on the node
-		// that went away. The external in-progress checkpoint is kept so delete
-		// or revert can delete it.
-		toUpdate.Status.InProgressLocalSnapshotName = ""
+		// A vanished Pod is not proof that node-local bytes or queued native
+		// work disappeared. Retain pending origin and both in-progress IDs;
+		// only an actual lifecycle settlement may clear them.
 		return nil
 	})
 	switch {

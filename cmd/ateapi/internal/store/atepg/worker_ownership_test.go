@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -113,7 +114,7 @@ func TestProveEmptyDraining_ProductionRefusalsAndNoEffects(t *testing.T) {
 				}
 				if scenario == "actor-pointer" {
 					a.Status.State = ateapipb.ActorState_ACTOR_STATE_RESUMING
-					a.Status.WorkerAssignment = &ateapipb.WorkerAssignment{Worker: &ateapipb.ObjectRef{Name: worker.GetMetadata().GetName()}, WorkerNamespace: worker.GetWorkerNamespace(), WorkerPod: worker.GetWorkerPod(), WorkerPodUid: worker.GetWorkerPodUid(), NodeName: worker.GetNodeName()}
+					a.Status.WorkerAssignment = &ateapipb.WorkerAssignment{Worker: &ateapipb.ObjectRef{Name: worker.GetMetadata().GetName()}, WorkerNamespace: worker.GetWorkerNamespace(), WorkerPool: worker.GetWorkerPool(), WorkerPodIp: worker.GetIp(), WorkerPod: worker.GetWorkerPod(), WorkerPodUid: worker.GetWorkerPodUid(), NodeName: worker.GetNodeName()}
 					reason = store.OwnershipBusy
 				}
 				if scenario == "running-missing-pointer" {
@@ -185,6 +186,15 @@ func TestProveEmptyDraining_IdentityAndNameReuse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// A new store instance recovers a lost proof response from durable records.
+	fresh, err := Connect(ctx, containerDSN, "public")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fresh.pool.Close()
+	defer fresh.Close()
+	proof, proofErr := fresh.ProveEmptyDraining(ctx, drained)
+	requireOwnershipProof(t, proof, proofErr, drained)
 	for _, missing := range []func(*ateapipb.Worker){func(w *ateapipb.Worker) { w.Metadata.Uid = "" }, func(w *ateapipb.Worker) { w.Metadata.Version = 0 }, func(w *ateapipb.Worker) { w.Metadata.Version = -1 }} {
 		expected := proto.CloneOf(drained)
 		missing(expected)
@@ -222,7 +232,7 @@ func TestProveEmptyDraining_PublicationAndRetentionInterleaving(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	actor, err := p.CreateActor(ctx, &ateapipb.Actor{Metadata: &ateapipb.ResourceMetadata{Atespace: "proof-team", Name: "publishing"}, Status: &ateapipb.ActorStatus{State: ateapipb.ActorState_ACTOR_STATE_PAUSING, WorkerAssignment: &ateapipb.WorkerAssignment{Worker: &ateapipb.ObjectRef{Name: worker.GetMetadata().GetName()}, WorkerNamespace: worker.GetWorkerNamespace(), WorkerPod: worker.GetWorkerPod(), WorkerPodUid: worker.GetWorkerPodUid(), NodeName: worker.GetNodeName()}}})
+	actor, err := p.CreateActor(ctx, &ateapipb.Actor{Metadata: &ateapipb.ResourceMetadata{Atespace: "proof-team", Name: "publishing"}, Status: &ateapipb.ActorStatus{State: ateapipb.ActorState_ACTOR_STATE_PAUSING, WorkerAssignment: &ateapipb.WorkerAssignment{Worker: &ateapipb.ObjectRef{Name: worker.GetMetadata().GetName()}, WorkerNamespace: worker.GetWorkerNamespace(), WorkerPool: worker.GetWorkerPool(), WorkerPodIp: worker.GetIp(), WorkerPod: worker.GetWorkerPod(), WorkerPodUid: worker.GetWorkerPodUid(), NodeName: worker.GetNodeName()}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -415,4 +425,94 @@ func requireOwnershipProof(t *testing.T, proof *ateapipb.ProveEmptyDrainingRespo
 	if err != nil || proof == nil || !proto.Equal(proof.GetWorker(), worker) || len(proof.GetOwnershipGeneration()) != len("observed-v1:")+64 {
 		t.Fatalf("incomplete exact worker proof: proof=%v err=%v", proof, err)
 	}
+}
+
+func TestNativeSnapshotOwnership_UnknownSurvivesMutationRefusal(t *testing.T) {
+	p := setupPostgresPersistence(t)
+	ctx := context.Background()
+	createTestAtespace(t, p, "origin-team")
+	op := &ateapipb.NativeOperationOwnership{Operation: "checkpoint-local", LocalSnapshotName: "pending"}
+	op.ProtoReflect().SetUnknown([]byte{0xa0, 0x06, 0x01})
+	actor, err := p.CreateActor(ctx, &ateapipb.Actor{
+		Metadata: &ateapipb.ResourceMetadata{Atespace: "origin-team", Name: "pending"},
+		Status:   &ateapipb.ActorStatus{State: ateapipb.ActorState_ACTOR_STATE_CRASHED, InProgressLocalSnapshotName: "pending", PendingNativeOperation: op},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var before, after []byte
+	if err := p.pool.QueryRow(ctx, `SELECT proto FROM actors WHERE uid = $1`, actor.GetMetadata().GetUid()).Scan(&before); err != nil {
+		t.Fatal(err)
+	}
+	_, err = p.UpdateActor(ctx, resources.ActorRefFromActor(actor), store.PreconditionFrom(actor), func(a *ateapipb.Actor) error { a.Status.PendingNativeOperation = nil; return nil })
+	requireOwnershipRefusal(t, nil, err, store.OwnershipUnknown)
+	if err := p.pool.QueryRow(ctx, `SELECT proto FROM actors WHERE uid = $1`, actor.GetMetadata().GetUid()).Scan(&after); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("mutation erased uncertain ownership")
+	}
+	fresh, err := Connect(ctx, containerDSN, "public")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fresh.pool.Close()
+	defer fresh.Close()
+	worker, err := fresh.CreateWorker(ctx, ownershipTestWorker())
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker, err = fresh.DrainEmptyWorker(ctx, worker.GetMetadata().GetName(), store.PreconditionFrom(worker))
+	if err != nil {
+		t.Fatal(err)
+	}
+	proof, err := fresh.ProveEmptyDraining(ctx, worker)
+	requireOwnershipRefusal(t, proof, err, store.OwnershipUnknown)
+}
+
+func TestNativeOperationDependency(t *testing.T) {
+	source := ownershipTestWorker()
+	source.Metadata.Uid = "22222222-2222-4222-8222-222222222222"
+	source.Metadata.Version = 3
+	source.Status.Allocated = &ateapipb.WorkerResources{Actors: 1}
+	assignment := &ateapipb.WorkerAssignment{
+		Worker:          &ateapipb.ObjectRef{Name: source.GetMetadata().GetName()},
+		WorkerNamespace: source.GetWorkerNamespace(), WorkerPool: source.GetWorkerPool(),
+		WorkerPod: source.GetWorkerPod(), WorkerPodUid: source.GetWorkerPodUid(),
+		WorkerPodIp: source.GetIp(), NodeName: source.GetNodeName(),
+	}
+	actor := &ateapipb.Actor{Status: &ateapipb.ActorStatus{
+		State:                       ateapipb.ActorState_ACTOR_STATE_CRASHED,
+		InProgressLocalSnapshotName: "pending",
+		PendingNativeOperation: &ateapipb.NativeOperationOwnership{
+			Operation: "checkpoint-local", LocalSnapshotName: "pending",
+			RequestDigest: strings.Repeat("a", 64), SourceWorker: source, Assignment: assignment,
+		},
+	}}
+	requireOwnershipRefusal(t, nil, actorRetirementDependency(actor, source, nil, nil), store.OwnershipOperationPending)
+	unrelated := proto.CloneOf(source)
+	unrelated.Metadata.Uid = "33333333-3333-4333-8333-333333333333"
+	unrelated.Metadata.Name = "other-worker"
+	unrelated.WorkerPodUid = "44444444-4444-4444-8444-444444444444"
+	unrelated.NodeName = "other-node"
+	if err := actorRetirementDependency(actor, unrelated, nil, nil); err != nil {
+		t.Fatalf("qualified unrelated operation became a global history fence: %v", err)
+	}
+	for _, mutate := range []func(*ateapipb.NativeOperationOwnership){
+		func(o *ateapipb.NativeOperationOwnership) { o.SourceWorker = nil },
+		func(o *ateapipb.NativeOperationOwnership) { o.RequestDigest = "" },
+		func(o *ateapipb.NativeOperationOwnership) { o.Operation = "future-operation" },
+		func(o *ateapipb.NativeOperationOwnership) { o.SourceWorker.Metadata.Uid = "" },
+		func(o *ateapipb.NativeOperationOwnership) {
+			o.Assignment.WorkerPodUid = "55555555-5555-4555-8555-555555555555"
+		},
+	} {
+		bad := proto.CloneOf(actor)
+		mutate(bad.Status.PendingNativeOperation)
+		requireOwnershipRefusal(t, nil, actorRetirementDependency(bad, unrelated, nil, nil), store.OwnershipUnknown)
+	}
+	legacy := proto.CloneOf(actor)
+	legacy.Status.PendingNativeOperation = nil
+	legacy.Status.LocalSnapshot = &ateapipb.LocalSnapshot{SnapshotName: "old-history", NodeVmsWithLocalSnapshots: []string{"unrelated-history-node"}}
+	requireOwnershipRefusal(t, nil, actorRetirementDependency(legacy, unrelated, nil, nil), store.OwnershipUnknown)
 }

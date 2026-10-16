@@ -1544,13 +1544,13 @@ type ActorStatus struct {
 	//
 	// +k8s:optional
 	Crash *ActorCrash `protobuf:"bytes,9,opt,name=crash,proto3" json:"crash,omitempty"`
-	// Origin of a native snapshot RPC that may still have local effects.
+	// Origin of a native mutation RPC that may still have local effects.
 	// Written before dispatch and retained across crash/restart. This is not a
 	// scheduling reservation. Only successful lifecycle publication settles it.
 	// +k8s:optional
-	PendingNativeSnapshot *NativeSnapshotOperation `protobuf:"bytes,10,opt,name=pending_native_snapshot,json=pendingNativeSnapshot,proto3" json:"pending_native_snapshot,omitempty"`
-	unknownFields         protoimpl.UnknownFields
-	sizeCache             protoimpl.SizeCache
+	PendingNativeOperation *NativeOperationOwnership `protobuf:"bytes,10,opt,name=pending_native_operation,json=pendingNativeOperation,proto3" json:"pending_native_operation,omitempty"`
+	unknownFields          protoimpl.UnknownFields
+	sizeCache              protoimpl.SizeCache
 }
 
 func (x *ActorStatus) Reset() {
@@ -1639,17 +1639,17 @@ func (x *ActorStatus) GetCrash() *ActorCrash {
 	return nil
 }
 
-func (x *ActorStatus) GetPendingNativeSnapshot() *NativeSnapshotOperation {
+func (x *ActorStatus) GetPendingNativeOperation() *NativeOperationOwnership {
 	if x != nil {
-		return x.PendingNativeSnapshot
+		return x.PendingNativeOperation
 	}
 	return nil
 }
 
-// NativeSnapshotOperation preserves the exact origin of ambiguous native work.
-// Assignment-backed checkpoints record the observed worker incarnation and
+// NativeOperationOwnership preserves the exact origin of ambiguous native work.
+// Assignment-backed mutations record the observed worker incarnation and
 // assignment. Paused uploads have no live worker and record their local source.
-type NativeSnapshotOperation struct {
+type NativeOperationOwnership struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// +k8s:optional
 	SourceWorker *Worker `protobuf:"bytes,1,opt,name=source_worker,json=sourceWorker,proto3" json:"source_worker,omitempty"`
@@ -1665,25 +1665,30 @@ type NativeSnapshotOperation struct {
 	LocalSnapshotName string `protobuf:"bytes,5,opt,name=local_snapshot_name,json=localSnapshotName,proto3" json:"local_snapshot_name,omitempty"`
 	// +k8s:optional
 	// +k8s:maxLength=2048
-	SnapshotUri   string `protobuf:"bytes,6,opt,name=snapshot_uri,json=snapshotUri,proto3" json:"snapshot_uri,omitempty"`
+	SnapshotUri string `protobuf:"bytes,6,opt,name=snapshot_uri,json=snapshotUri,proto3" json:"snapshot_uri,omitempty"`
+	// SHA-256 of the deterministic native request, including actor/Pod identity
+	// and operation parameters. Retries cannot silently change pending work.
+	// +k8s:optional
+	// +k8s:maxLength=64
+	RequestDigest string `protobuf:"bytes,7,opt,name=request_digest,json=requestDigest,proto3" json:"request_digest,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *NativeSnapshotOperation) Reset() {
-	*x = NativeSnapshotOperation{}
+func (x *NativeOperationOwnership) Reset() {
+	*x = NativeOperationOwnership{}
 	mi := &file_ateapi_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *NativeSnapshotOperation) String() string {
+func (x *NativeOperationOwnership) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*NativeSnapshotOperation) ProtoMessage() {}
+func (*NativeOperationOwnership) ProtoMessage() {}
 
-func (x *NativeSnapshotOperation) ProtoReflect() protoreflect.Message {
+func (x *NativeOperationOwnership) ProtoReflect() protoreflect.Message {
 	mi := &file_ateapi_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -1695,49 +1700,56 @@ func (x *NativeSnapshotOperation) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use NativeSnapshotOperation.ProtoReflect.Descriptor instead.
-func (*NativeSnapshotOperation) Descriptor() ([]byte, []int) {
+// Deprecated: Use NativeOperationOwnership.ProtoReflect.Descriptor instead.
+func (*NativeOperationOwnership) Descriptor() ([]byte, []int) {
 	return file_ateapi_proto_rawDescGZIP(), []int{13}
 }
 
-func (x *NativeSnapshotOperation) GetSourceWorker() *Worker {
+func (x *NativeOperationOwnership) GetSourceWorker() *Worker {
 	if x != nil {
 		return x.SourceWorker
 	}
 	return nil
 }
 
-func (x *NativeSnapshotOperation) GetAssignment() *WorkerAssignment {
+func (x *NativeOperationOwnership) GetAssignment() *WorkerAssignment {
 	if x != nil {
 		return x.Assignment
 	}
 	return nil
 }
 
-func (x *NativeSnapshotOperation) GetLocalSource() *LocalSnapshot {
+func (x *NativeOperationOwnership) GetLocalSource() *LocalSnapshot {
 	if x != nil {
 		return x.LocalSource
 	}
 	return nil
 }
 
-func (x *NativeSnapshotOperation) GetOperation() string {
+func (x *NativeOperationOwnership) GetOperation() string {
 	if x != nil {
 		return x.Operation
 	}
 	return ""
 }
 
-func (x *NativeSnapshotOperation) GetLocalSnapshotName() string {
+func (x *NativeOperationOwnership) GetLocalSnapshotName() string {
 	if x != nil {
 		return x.LocalSnapshotName
 	}
 	return ""
 }
 
-func (x *NativeSnapshotOperation) GetSnapshotUri() string {
+func (x *NativeOperationOwnership) GetSnapshotUri() string {
 	if x != nil {
 		return x.SnapshotUri
+	}
+	return ""
+}
+
+func (x *NativeOperationOwnership) GetRequestDigest() string {
+	if x != nil {
+		return x.RequestDigest
 	}
 	return ""
 }
@@ -7589,7 +7601,7 @@ const file_ateapi_proto_rawDesc = "" +
 	"\x19CredentialHeaderInjection\x12\x16\n" +
 	"\x06header\x18\x01 \x01(\tR\x06header\x12\x16\n" +
 	"\x06prefix\x18\x02 \x01(\tR\x06prefix\x12%\n" +
-	"\x0ecredential_uri\x18\x03 \x01(\tR\rcredentialUri\"\xc2\x04\n" +
+	"\x0ecredential_uri\x18\x03 \x01(\tR\rcredentialUri\"\xc5\x04\n" +
 	"\vActorStatus\x12(\n" +
 	"\x05state\x18\x01 \x01(\x0e2\x12.ateapi.ActorStateR\x05state\x12E\n" +
 	"\x11worker_assignment\x18\x02 \x01(\v2\x18.ateapi.WorkerAssignmentR\x10workerAssignment\x127\n" +
@@ -7598,10 +7610,10 @@ const file_ateapi_proto_rawDesc = "" +
 	"\x0elocal_snapshot\x18\x05 \x01(\v2\x15.ateapi.LocalSnapshotR\rlocalSnapshot\x12;\n" +
 	"\ractor_volumes\x18\a \x03(\v2\x16.ateapi.ExternalVolumeR\factorVolumes\x12D\n" +
 	"\x1fin_progress_local_snapshot_name\x18\b \x01(\tR\x1binProgressLocalSnapshotName\x12(\n" +
-	"\x05crash\x18\t \x01(\v2\x12.ateapi.ActorCrashR\x05crash\x12W\n" +
-	"\x17pending_native_snapshot\x18\n" +
-	" \x01(\v2\x1f.ateapi.NativeSnapshotOperationR\x15pendingNativeSnapshot\"\xb3\x02\n" +
-	"\x17NativeSnapshotOperation\x123\n" +
+	"\x05crash\x18\t \x01(\v2\x12.ateapi.ActorCrashR\x05crash\x12Z\n" +
+	"\x18pending_native_operation\x18\n" +
+	" \x01(\v2 .ateapi.NativeOperationOwnershipR\x16pendingNativeOperation\"\xdb\x02\n" +
+	"\x18NativeOperationOwnership\x123\n" +
 	"\rsource_worker\x18\x01 \x01(\v2\x0e.ateapi.WorkerR\fsourceWorker\x128\n" +
 	"\n" +
 	"assignment\x18\x02 \x01(\v2\x18.ateapi.WorkerAssignmentR\n" +
@@ -7609,7 +7621,8 @@ const file_ateapi_proto_rawDesc = "" +
 	"\flocal_source\x18\x03 \x01(\v2\x15.ateapi.LocalSnapshotR\vlocalSource\x12\x1c\n" +
 	"\toperation\x18\x04 \x01(\tR\toperation\x12.\n" +
 	"\x13local_snapshot_name\x18\x05 \x01(\tR\x11localSnapshotName\x12!\n" +
-	"\fsnapshot_uri\x18\x06 \x01(\tR\vsnapshotUri\"a\n" +
+	"\fsnapshot_uri\x18\x06 \x01(\tR\vsnapshotUri\x12%\n" +
+	"\x0erequest_digest\x18\a \x01(\tR\rrequestDigest\"a\n" +
 	"\n" +
 	"ActorCrash\x12\x18\n" +
 	"\amessage\x18\x01 \x01(\tR\amessage\x129\n" +
@@ -8039,7 +8052,7 @@ var file_ateapi_proto_goTypes = []any{
 	(*EgressRuleEffects)(nil),                  // 19: ateapi.EgressRuleEffects
 	(*CredentialHeaderInjection)(nil),          // 20: ateapi.CredentialHeaderInjection
 	(*ActorStatus)(nil),                        // 21: ateapi.ActorStatus
-	(*NativeSnapshotOperation)(nil),            // 22: ateapi.NativeSnapshotOperation
+	(*NativeOperationOwnership)(nil),           // 22: ateapi.NativeOperationOwnership
 	(*ActorCrash)(nil),                         // 23: ateapi.ActorCrash
 	(*WorkerAssignment)(nil),                   // 24: ateapi.WorkerAssignment
 	(*TagStatus)(nil),                          // 25: ateapi.TagStatus
@@ -8163,10 +8176,10 @@ var file_ateapi_proto_depIdxs = []int32{
 	10,  // 22: ateapi.ActorStatus.local_snapshot:type_name -> ateapi.LocalSnapshot
 	13,  // 23: ateapi.ActorStatus.actor_volumes:type_name -> ateapi.ExternalVolume
 	23,  // 24: ateapi.ActorStatus.crash:type_name -> ateapi.ActorCrash
-	22,  // 25: ateapi.ActorStatus.pending_native_snapshot:type_name -> ateapi.NativeSnapshotOperation
-	102, // 26: ateapi.NativeSnapshotOperation.source_worker:type_name -> ateapi.Worker
-	24,  // 27: ateapi.NativeSnapshotOperation.assignment:type_name -> ateapi.WorkerAssignment
-	10,  // 28: ateapi.NativeSnapshotOperation.local_source:type_name -> ateapi.LocalSnapshot
+	22,  // 25: ateapi.ActorStatus.pending_native_operation:type_name -> ateapi.NativeOperationOwnership
+	102, // 26: ateapi.NativeOperationOwnership.source_worker:type_name -> ateapi.Worker
+	24,  // 27: ateapi.NativeOperationOwnership.assignment:type_name -> ateapi.WorkerAssignment
+	10,  // 28: ateapi.NativeOperationOwnership.local_source:type_name -> ateapi.LocalSnapshot
 	117, // 29: ateapi.ActorCrash.crash_time:type_name -> google.protobuf.Timestamp
 	28,  // 30: ateapi.WorkerAssignment.worker:type_name -> ateapi.ObjectRef
 	9,   // 31: ateapi.TagStatus.snapshot:type_name -> ateapi.ExternalSnapshot

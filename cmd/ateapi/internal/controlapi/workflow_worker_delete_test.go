@@ -132,10 +132,9 @@ func TestDeleteWorkerWorkflow_ReleasesBoundActor(t *testing.T) {
 	if got.GetStatus().GetWorkerAssignment() != nil {
 		t.Errorf("actor worker assignment = %v, want it cleared", got.GetStatus().GetWorkerAssignment())
 	}
-	// The local checkpoint lived on the node that went away, so it dies with
-	// the worker.
-	if got.GetStatus().GetInProgressLocalSnapshotName() != "" {
-		t.Errorf("in-progress local checkpoint not cleared: %v", got.GetStatus())
+	// Pod deletion does not establish node-local operation settlement.
+	if got.GetStatus().GetInProgressLocalSnapshotName() != "partial-local-snapshot" {
+		t.Errorf("in-progress local checkpoint origin was forgotten: %v", got.GetStatus())
 	}
 	// The durable one is kept: it names the prefix whatever atelet already
 	// uploaded lives under, which delete or revert needs to collect it.

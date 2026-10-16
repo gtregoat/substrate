@@ -728,10 +728,10 @@ func Validate_ActorStatus(
 		errs = append(errs, fn(fldPath.Child("crash"), obj.Crash, oldVal, oldObj != nil)...)
 	}
 
-	{ // field ateapipb.ActorStatus.PendingNativeSnapshot
+	{ // field ateapipb.ActorStatus.PendingNativeOperation
 		fn := func(
 			fldPath *field.Path,
-			obj, oldObj *ateapipb.NativeSnapshotOperation,
+			obj, oldObj *ateapipb.NativeOperationOwnership,
 			oldValueCorrelated bool) (errs field.ErrorList) {
 			// don't revalidate unchanged data
 			if oldValueCorrelated && op.Type == operation.Update {
@@ -748,14 +748,14 @@ func Validate_ActorStatus(
 				return // do not proceed
 			}
 			// call the type's validation function
-			errs = append(errs, Validate_NativeSnapshotOperation(ctx, op, fldPath, obj, oldObj)...)
+			errs = append(errs, Validate_NativeOperationOwnership(ctx, op, fldPath, obj, oldObj)...)
 			return
 		}
 		oldVal := safe.Field(oldObj,
-			func(oldObj *ateapipb.ActorStatus) *ateapipb.NativeSnapshotOperation {
-				return oldObj.PendingNativeSnapshot
+			func(oldObj *ateapipb.ActorStatus) *ateapipb.NativeOperationOwnership {
+				return oldObj.PendingNativeOperation
 			})
-		errs = append(errs, fn(fldPath.Child("pending_native_snapshot"), obj.PendingNativeSnapshot, oldVal, oldObj != nil)...)
+		errs = append(errs, fn(fldPath.Child("pending_native_operation"), obj.PendingNativeOperation, oldVal, oldObj != nil)...)
 	}
 
 	return errs
@@ -5460,13 +5460,13 @@ func Validate_MintAteomActorCertificateRequest(
 	return errs
 }
 
-// Validate_NativeSnapshotOperation validates an instance of NativeSnapshotOperation according
+// Validate_NativeOperationOwnership validates an instance of NativeOperationOwnership according
 // to declarative validation rules in the API schema.
-func Validate_NativeSnapshotOperation(
+func Validate_NativeOperationOwnership(
 	ctx context.Context, op operation.Operation, fldPath *field.Path,
-	obj, oldObj *ateapipb.NativeSnapshotOperation) (errs field.ErrorList) {
+	obj, oldObj *ateapipb.NativeOperationOwnership) (errs field.ErrorList) {
 
-	{ // field ateapipb.NativeSnapshotOperation.SourceWorker
+	{ // field ateapipb.NativeOperationOwnership.SourceWorker
 		fn := func(
 			fldPath *field.Path,
 			obj, oldObj *ateapipb.Worker,
@@ -5490,13 +5490,13 @@ func Validate_NativeSnapshotOperation(
 			return
 		}
 		oldVal := safe.Field(oldObj,
-			func(oldObj *ateapipb.NativeSnapshotOperation) *ateapipb.Worker {
+			func(oldObj *ateapipb.NativeOperationOwnership) *ateapipb.Worker {
 				return oldObj.SourceWorker
 			})
 		errs = append(errs, fn(fldPath.Child("source_worker"), obj.SourceWorker, oldVal, oldObj != nil)...)
 	}
 
-	{ // field ateapipb.NativeSnapshotOperation.Assignment
+	{ // field ateapipb.NativeOperationOwnership.Assignment
 		fn := func(
 			fldPath *field.Path,
 			obj, oldObj *ateapipb.WorkerAssignment,
@@ -5520,13 +5520,13 @@ func Validate_NativeSnapshotOperation(
 			return
 		}
 		oldVal := safe.Field(oldObj,
-			func(oldObj *ateapipb.NativeSnapshotOperation) *ateapipb.WorkerAssignment {
+			func(oldObj *ateapipb.NativeOperationOwnership) *ateapipb.WorkerAssignment {
 				return oldObj.Assignment
 			})
 		errs = append(errs, fn(fldPath.Child("assignment"), obj.Assignment, oldVal, oldObj != nil)...)
 	}
 
-	{ // field ateapipb.NativeSnapshotOperation.LocalSource
+	{ // field ateapipb.NativeOperationOwnership.LocalSource
 		fn := func(
 			fldPath *field.Path,
 			obj, oldObj *ateapipb.LocalSnapshot,
@@ -5550,13 +5550,13 @@ func Validate_NativeSnapshotOperation(
 			return
 		}
 		oldVal := safe.Field(oldObj,
-			func(oldObj *ateapipb.NativeSnapshotOperation) *ateapipb.LocalSnapshot {
+			func(oldObj *ateapipb.NativeOperationOwnership) *ateapipb.LocalSnapshot {
 				return oldObj.LocalSource
 			})
 		errs = append(errs, fn(fldPath.Child("local_source"), obj.LocalSource, oldVal, oldObj != nil)...)
 	}
 
-	{ // field ateapipb.NativeSnapshotOperation.Operation
+	{ // field ateapipb.NativeOperationOwnership.Operation
 		fn := func(
 			fldPath *field.Path,
 			obj, oldObj *string,
@@ -5582,13 +5582,13 @@ func Validate_NativeSnapshotOperation(
 			return
 		}
 		oldVal := safe.Field(oldObj,
-			func(oldObj *ateapipb.NativeSnapshotOperation) *string {
+			func(oldObj *ateapipb.NativeOperationOwnership) *string {
 				return &oldObj.Operation
 			})
 		errs = append(errs, fn(fldPath.Child("operation"), &obj.Operation, oldVal, oldObj != nil)...)
 	}
 
-	{ // field ateapipb.NativeSnapshotOperation.LocalSnapshotName
+	{ // field ateapipb.NativeOperationOwnership.LocalSnapshotName
 		fn := func(
 			fldPath *field.Path,
 			obj, oldObj *string,
@@ -5613,13 +5613,13 @@ func Validate_NativeSnapshotOperation(
 			return
 		}
 		oldVal := safe.Field(oldObj,
-			func(oldObj *ateapipb.NativeSnapshotOperation) *string {
+			func(oldObj *ateapipb.NativeOperationOwnership) *string {
 				return &oldObj.LocalSnapshotName
 			})
 		errs = append(errs, fn(fldPath.Child("local_snapshot_name"), &obj.LocalSnapshotName, oldVal, oldObj != nil)...)
 	}
 
-	{ // field ateapipb.NativeSnapshotOperation.SnapshotUri
+	{ // field ateapipb.NativeOperationOwnership.SnapshotUri
 		fn := func(
 			fldPath *field.Path,
 			obj, oldObj *string,
@@ -5644,10 +5644,41 @@ func Validate_NativeSnapshotOperation(
 			return
 		}
 		oldVal := safe.Field(oldObj,
-			func(oldObj *ateapipb.NativeSnapshotOperation) *string {
+			func(oldObj *ateapipb.NativeOperationOwnership) *string {
 				return &oldObj.SnapshotUri
 			})
 		errs = append(errs, fn(fldPath.Child("snapshot_uri"), &obj.SnapshotUri, oldVal, oldObj != nil)...)
+	}
+
+	{ // field ateapipb.NativeOperationOwnership.RequestDigest
+		fn := func(
+			fldPath *field.Path,
+			obj, oldObj *string,
+			oldValueCorrelated bool) (errs field.ErrorList) {
+			// don't revalidate unchanged data
+			if oldValueCorrelated && op.Type == operation.Update {
+				if obj == oldObj || (obj != nil && oldObj != nil && *obj == *oldObj) {
+					return nil
+				}
+			}
+			// call field-attached validations
+			earlyReturn := false
+			if e := validate.OptionalValue(ctx, op, fldPath, obj, oldObj).MarkShortCircuit(); len(e) != 0 {
+				earlyReturn = true
+			}
+			if earlyReturn {
+				return // do not proceed
+			}
+			if e := validate.MaxLength(ctx, op, fldPath, obj, oldObj, 64); len(e) != 0 {
+				errs = append(errs, e...)
+			}
+			return
+		}
+		oldVal := safe.Field(oldObj,
+			func(oldObj *ateapipb.NativeOperationOwnership) *string {
+				return &oldObj.RequestDigest
+			})
+		errs = append(errs, fn(fldPath.Child("request_digest"), &obj.RequestDigest, oldVal, oldObj != nil)...)
 	}
 
 	return errs
