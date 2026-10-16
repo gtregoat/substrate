@@ -314,7 +314,7 @@ func nativeOperationDependency(actor *ateapipb.Actor, target *ateapipb.Worker) e
 		op.GetOperation() == "checkpoint-local" && state == ateapipb.ActorState_ACTOR_STATE_PAUSING ||
 		(op.GetOperation() == "checkpoint-external" || op.GetOperation() == "upload-local") && state == ateapipb.ActorState_ACTOR_STATE_SUSPENDING ||
 		(op.GetOperation() == "run" || op.GetOperation() == "restore") && state == ateapipb.ActorState_ACTOR_STATE_RESUMING ||
-		op.GetOperation() == "terminate" && (state == ateapipb.ActorState_ACTOR_STATE_DELETING || state == ateapipb.ActorState_ACTOR_STATE_REVERTING)
+		(op.GetOperation() == "terminate" || op.GetOperation() == "terminate-acknowledged") && (state == ateapipb.ActorState_ACTOR_STATE_DELETING || state == ateapipb.ActorState_ACTOR_STATE_REVERTING)
 	if !validState {
 		return ownershipRefusal(store.OwnershipUnknown)
 	}
@@ -325,7 +325,7 @@ func nativeOperationDependency(actor *ateapipb.Actor, target *ateapipb.Worker) e
 		return ownershipRefusal(store.OwnershipUnknown)
 	}
 	switch op.GetOperation() {
-	case "checkpoint-local", "checkpoint-external", "run", "restore", "terminate":
+	case "checkpoint-local", "checkpoint-external", "run", "restore", "terminate", "terminate-acknowledged":
 		source, a := op.GetSourceWorker(), op.GetAssignment()
 		if source == nil || !qualifiedAssignmentCoordinates(a) || op.GetLocalSource() != nil || a.GetWorker().GetName() == "" || a.GetWorker().GetAtespace() != "" || source.GetMetadata().GetAtespace() != "" || source.GetMetadata().GetVersion() < 1 || source.GetWorkerNamespace() == "" || source.GetWorkerPool() == "" || source.GetWorkerPod() == "" || source.GetNodeName() == "" || net.ParseIP(source.GetIp()) == nil {
 			return ownershipRefusal(store.OwnershipUnknown)

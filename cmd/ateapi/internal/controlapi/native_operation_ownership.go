@@ -18,6 +18,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 
 	"github.com/agent-substrate/substrate/cmd/ateapi/internal/store"
@@ -108,19 +109,62 @@ func (w *ActorWorkflow) recordNativeOperationOrigin(ctx context.Context, ref res
 // evidenced native settlement is available, including for unlocated legacy work.
 func requireSettledNativeOperation(actor *ateapipb.Actor) error {
 	s := actor.GetStatus()
-	if s.GetPendingNativeOperation() != nil || store.UnlocatedNativeFailure(s) || s.GetInProgressSnapshotUri() != "" || s.GetInProgressLocalSnapshotName() != "" {
+	if (s.GetPendingNativeOperation() != nil && !acknowledgedNativeTermination(actor)) || store.UnlocatedNativeFailure(s) || s.GetInProgressSnapshotUri() != "" || s.GetInProgressLocalSnapshotName() != "" {
 		return status.Error(codes.FailedPrecondition, "native operation completion is unresolved; retain operation ownership")
 	}
 	return nil
 }
 
+// The operation envelope also retains a positive native ACK through retryable
+// cleanup failures. Older readers conservatively refuse this operation string.
+const terminatedAcknowledged = "terminate-acknowledged"
+
+func acknowledgedNativeTermination(actor *ateapipb.Actor) bool {
+	s := actor.GetStatus()
+	op := s.GetPendingNativeOperation()
+	if op.GetOperation() != terminatedAcknowledged ||
+		(s.GetState() != ateapipb.ActorState_ACTOR_STATE_DELETING && s.GetState() != ateapipb.ActorState_ACTOR_STATE_REVERTING) {
+		return false
+	}
+	return len(op.GetRequestDigest()) == 64 && op.GetSourceWorker().GetMetadata().GetUid() != "" &&
+		op.GetAssignment() != nil && proto.Equal(op.GetAssignment(), workerAssignmentFrom(op.GetSourceWorker())) &&
+		(s.GetWorkerAssignment() == nil || proto.Equal(s.GetWorkerAssignment(), op.GetAssignment()))
+}
+
+// Called only after a successful native response. A bounded CAS reconciliation
+// can use that knowledge within this call, but cannot replay an unknown RPC.
 func (w *ActorWorkflow) settleNativeTermination(ctx context.Context, ref resources.ActorRef, actor *ateapipb.Actor) error {
-	_, err := w.store.UpdateActor(ctx, ref, store.PreconditionFrom(actor), func(a *ateapipb.Actor) error {
-		if a.GetStatus().GetPendingNativeOperation().GetOperation() != "terminate" {
-			return status.Error(codes.FailedPrecondition, "termination operation changed before settlement")
+	origin := actor.GetStatus().GetPendingNativeOperation()
+	for attempt := 0; attempt < 2; attempt++ {
+		_, err := w.store.UpdateActor(ctx, ref, store.PreconditionFrom(actor), func(a *ateapipb.Actor) error {
+			if origin.GetOperation() != "terminate" || !proto.Equal(a.GetStatus().GetPendingNativeOperation(), origin) {
+				return status.Error(codes.FailedPrecondition, "termination operation changed before settlement")
+			}
+			a.Status.PendingNativeOperation = proto.CloneOf(origin)
+			a.Status.PendingNativeOperation.Operation = terminatedAcknowledged
+			return nil
+		})
+		if err == nil {
+			return nil
 		}
-		a.Status.PendingNativeOperation = nil
-		return nil
-	})
-	return err
+		latest, readErr := w.store.GetActor(ctx, ref)
+		if readErr != nil {
+			return errors.Join(err, readErr)
+		}
+		if latest.GetMetadata().GetUid() != actor.GetMetadata().GetUid() ||
+			latest.GetStatus().GetState() != actor.GetStatus().GetState() ||
+			!proto.Equal(latest.GetStatus().GetWorkerAssignment(), actor.GetStatus().GetWorkerAssignment()) {
+			return err
+		}
+		expected := proto.CloneOf(origin)
+		expected.Operation = terminatedAcknowledged
+		if acknowledgedNativeTermination(latest) && proto.Equal(latest.GetStatus().GetPendingNativeOperation(), expected) {
+			return nil // The settlement write committed but its response was lost.
+		}
+		if !errors.Is(err, store.ErrVersionConflict) || !proto.Equal(latest.GetStatus().GetPendingNativeOperation(), origin) {
+			return err
+		}
+		actor = latest
+	}
+	return status.Error(codes.Aborted, "termination settlement conflicted; ownership retained")
 }

@@ -265,6 +265,7 @@ func (w *ActorWorkflow) ensureRevertedFinalized(ctx context.Context, actorRef re
 		toUpdate.Status.InProgressLocalSnapshotName = ""
 		toUpdate.Status.LocalSnapshot = nil
 		toUpdate.Status.Crash = nil
+		toUpdate.Status.PendingNativeOperation = nil
 		return nil
 	})
 	if err != nil {
