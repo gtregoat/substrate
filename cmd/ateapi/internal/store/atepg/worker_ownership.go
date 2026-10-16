@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strings"
 
 	"github.com/agent-substrate/substrate/cmd/ateapi/internal/store"
 	"github.com/agent-substrate/substrate/pkg/proto/ateapipb"
@@ -148,6 +149,9 @@ func (p *Persistence) ProveEmptyDraining(ctx context.Context, expected *ateapipb
 		if err := rows.Scan(&space, &name, &uid, &version, &data, &liveData, &liveName, &liveUID, &liveVersion, &claimData); err != nil {
 			return nil, err
 		}
+		if _, err := uuid.Parse(uid); err != nil || version < 1 || space == "" || name == "" {
+			return nil, ownershipRefusal(store.OwnershipUnknown)
+		}
 		actor := &ateapipb.Actor{}
 		if proto.Unmarshal(data, actor) != nil || ownershipUnknown(actor.ProtoReflect()) || validateProtoMetadataMatchesColumns("ownership actor", actor.GetMetadata(), uid, version) != nil || actor.GetMetadata().GetAtespace() != space || actor.GetMetadata().GetName() != name {
 			return nil, ownershipRefusal(store.OwnershipUnknown)
@@ -236,8 +240,11 @@ func actorRetirementDependency(actor *ateapipb.Actor, worker, live *ateapipb.Wor
 		}
 		return ownershipRefusal(store.OwnershipBusy)
 	}
+	if s.GetPendingNativeOperation() == nil && strings.Contains(s.GetCrash().GetMessage(), "atelet ") {
+		return ownershipRefusal(store.OwnershipUnknown)
+	}
 	// Unlocated in-flight state cannot be attributed to an unrelated node.
-	if s.GetPendingNativeSnapshot() == nil && s.GetWorkerAssignment() == nil && (s.GetLocalSnapshot() == nil || s.GetState() != ateapipb.ActorState_ACTOR_STATE_SUSPENDING) && (s.GetInProgressSnapshotUri() != "" || s.GetInProgressLocalSnapshotName() != "") {
+	if s.GetPendingNativeOperation() == nil && s.GetWorkerAssignment() == nil && (s.GetLocalSnapshot() == nil || s.GetState() != ateapipb.ActorState_ACTOR_STATE_SUSPENDING) && (s.GetInProgressSnapshotUri() != "" || s.GetInProgressLocalSnapshotName() != "") {
 		return ownershipRefusal(store.OwnershipUnknown)
 	}
 	return nil
@@ -249,7 +256,7 @@ func actorRetirementDependency(actor *ateapipb.Actor, worker, live *ateapipb.Wor
 func qualifiedRunningAssignment(actor *ateapipb.Actor, live *ateapipb.Worker, claim *ateapipb.ActorAssignment) bool {
 	s := actor.GetStatus()
 	a := s.GetWorkerAssignment()
-	if a == nil || live == nil || claim == nil || s.GetPendingNativeSnapshot() != nil || s.GetInProgressSnapshotUri() != "" || s.GetInProgressLocalSnapshotName() != "" {
+	if a == nil || live == nil || claim == nil || s.GetPendingNativeOperation() != nil || s.GetInProgressSnapshotUri() != "" || s.GetInProgressLocalSnapshotName() != "" {
 		return false
 	}
 	if a.GetWorker().GetName() == "" || a.GetWorker().GetAtespace() != "" || a.GetWorkerNamespace() == "" || a.GetWorkerPool() == "" || a.GetWorkerPod() == "" || a.GetNodeName() == "" || net.ParseIP(a.GetWorkerPodIp()) == nil {
@@ -261,7 +268,7 @@ func qualifiedRunningAssignment(actor *ateapipb.Actor, live *ateapipb.Worker, cl
 	if _, err := uuid.Parse(live.GetMetadata().GetUid()); err != nil {
 		return false
 	}
-	if live.GetMetadata().GetVersion() < 1 || live.GetStatus().GetAllocated().GetActors() < 1 || (live.GetStatus().GetState() != ateapipb.WorkerState_WORKER_STATE_ACTIVE && live.GetStatus().GetState() != ateapipb.WorkerState_WORKER_STATE_DRAINING) {
+	if s.GetState() != ateapipb.ActorState_ACTOR_STATE_RUNNING || live.GetMetadata().GetAtespace() != "" || live.GetMetadata().GetVersion() < 1 || live.GetStatus().GetAllocated().GetActors() < 1 || (live.GetStatus().GetState() != ateapipb.WorkerState_WORKER_STATE_ACTIVE && live.GetStatus().GetState() != ateapipb.WorkerState_WORKER_STATE_DRAINING) {
 		return false
 	}
 	if claim.GetActorUid() == "" || claim.GetActorUid() != actor.GetMetadata().GetUid() || claim.GetActor().GetName() != actor.GetMetadata().GetName() || claim.GetActor().GetAtespace() != actor.GetMetadata().GetAtespace() {
@@ -286,15 +293,18 @@ func qualifiedRunningAssignment(actor *ateapipb.Actor, live *ateapipb.Worker, cl
 // crash releases the scheduling reservation. A URI alone is never settlement.
 func nativeSnapshotDependency(actor *ateapipb.Actor, target *ateapipb.Worker) error {
 	s := actor.GetStatus()
-	op := s.GetPendingNativeSnapshot()
+	op := s.GetPendingNativeOperation()
 	if op == nil {
 		return nil
+	}
+	if digest, err := hex.DecodeString(op.GetRequestDigest()); err != nil || len(digest) != sha256.Size {
+		return ownershipRefusal(store.OwnershipUnknown)
 	}
 	if op.GetLocalSnapshotName() != s.GetInProgressLocalSnapshotName() || op.GetSnapshotUri() != s.GetInProgressSnapshotUri() {
 		return ownershipRefusal(store.OwnershipUnknown)
 	}
 	switch op.GetOperation() {
-	case "checkpoint-local", "checkpoint-external":
+	case "checkpoint-local", "checkpoint-external", "run", "restore", "terminate":
 		source, a := op.GetSourceWorker(), op.GetAssignment()
 		if source == nil || a == nil || op.GetLocalSource() != nil || a.GetWorker().GetName() == "" || a.GetWorker().GetAtespace() != "" || source.GetMetadata().GetAtespace() != "" || source.GetMetadata().GetVersion() < 1 || source.GetWorkerNamespace() == "" || source.GetWorkerPool() == "" || source.GetWorkerPod() == "" || source.GetNodeName() == "" || net.ParseIP(source.GetIp()) == nil {
 			return ownershipRefusal(store.OwnershipUnknown)

@@ -16,7 +16,10 @@ package controlapi
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"strings"
 
 	"github.com/agent-substrate/substrate/cmd/ateapi/internal/store"
 	"github.com/agent-substrate/substrate/internal/resources"
@@ -26,28 +29,34 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// recordNativeSnapshotOrigin runs before dispatch, while the actor still owns
+// recordNativeOperationOrigin runs before dispatch, while the actor still owns
 // its assignment or local snapshot. Releasing a reservation does not clear it.
 // The actor CAS prevents a concurrent crash or replacement from losing origin.
-func (w *ActorWorkflow) recordNativeSnapshotOrigin(ctx context.Context, ref resources.ActorRef, actor *ateapipb.Actor, operation string) (*ateapipb.Actor, error) {
+func (w *ActorWorkflow) recordNativeOperationOrigin(ctx context.Context, ref resources.ActorRef, actor *ateapipb.Actor, operation string, request proto.Message) (*ateapipb.Actor, error) {
+	data, err := (proto.MarshalOptions{Deterministic: true}).Marshal(request)
+	if err != nil {
+		return nil, fmt.Errorf("encoding native operation request: %w", err)
+	}
+	digest := sha256.Sum256(data)
 	s := actor.GetStatus()
-	origin := &ateapipb.NativeSnapshotOperation{
+	origin := &ateapipb.NativeOperationOwnership{
 		Operation:         operation,
+		RequestDigest:     hex.EncodeToString(digest[:]),
 		LocalSnapshotName: s.GetInProgressLocalSnapshotName(),
 		SnapshotUri:       s.GetInProgressSnapshotUri(),
 	}
 	switch operation {
-	case "checkpoint-local", "checkpoint-external":
+	case "checkpoint-local", "checkpoint-external", "run", "restore", "terminate":
 		a := s.GetWorkerAssignment()
 		if a == nil || a.GetWorker().GetName() == "" || a.GetWorkerPodUid() == "" || a.GetNodeName() == "" {
-			return nil, status.Error(codes.FailedPrecondition, "native snapshot origin has no qualified assignment")
+			return nil, status.Error(codes.FailedPrecondition, "native operation origin has no qualified assignment")
 		}
 		worker, err := w.store.GetWorker(ctx, a.GetWorker().GetName())
 		if err != nil {
-			return nil, fmt.Errorf("while recording native snapshot origin: %w", err)
+			return nil, fmt.Errorf("while recording native operation origin: %w", err)
 		}
 		if !proto.Equal(a, workerAssignmentFrom(worker)) || worker.GetMetadata().GetUid() == "" || worker.GetMetadata().GetVersion() < 1 {
-			return nil, status.Error(codes.FailedPrecondition, "native snapshot origin worker mapping changed")
+			return nil, status.Error(codes.FailedPrecondition, "native operation origin worker mapping changed")
 		}
 		origin.SourceWorker = proto.CloneOf(worker)
 		origin.Assignment = proto.CloneOf(a)
@@ -58,22 +67,22 @@ func (w *ActorWorkflow) recordNativeSnapshotOrigin(ctx context.Context, ref reso
 		}
 		origin.LocalSource = proto.CloneOf(local)
 	default:
-		return nil, status.Error(codes.FailedPrecondition, "unknown native snapshot operation")
+		return nil, status.Error(codes.FailedPrecondition, "unknown native operation operation")
 	}
-	if existing := s.GetPendingNativeSnapshot(); existing != nil {
+	if existing := s.GetPendingNativeOperation(); existing != nil {
 		// Allocation/version may have changed since dispatch. Preserve the first
 		// observation, but never adopt a different incarnation or operation.
 		if existing.GetSourceWorker().GetMetadata().GetUid() != origin.GetSourceWorker().GetMetadata().GetUid() {
-			return nil, status.Error(codes.FailedPrecondition, "unsettled native snapshot worker incarnation changed")
+			return nil, status.Error(codes.FailedPrecondition, "unsettled native operation worker incarnation changed")
 		}
 		origin.SourceWorker = existing.GetSourceWorker()
 		if !proto.Equal(existing, origin) {
-			return nil, status.Error(codes.FailedPrecondition, "unsettled native snapshot origin changed")
+			return nil, status.Error(codes.FailedPrecondition, "unsettled native operation origin changed")
 		}
 		return actor, nil
 	}
 	return w.store.UpdateActor(ctx, ref, store.PreconditionFrom(actor), func(a *ateapipb.Actor) error {
-		a.Status.PendingNativeSnapshot = origin
+		a.Status.PendingNativeOperation = origin
 		return nil
 	})
 }
@@ -81,10 +90,21 @@ func (w *ActorWorkflow) recordNativeSnapshotOrigin(ctx context.Context, ref reso
 // Unknown native completion cannot be settled by deleting an external URI or
 // by discarding actor status. Recovery keeps the record until a separately
 // evidenced native settlement is available, including for unlocated legacy work.
-func requireSettledNativeSnapshot(actor *ateapipb.Actor) error {
+func requireSettledNativeOperation(actor *ateapipb.Actor) error {
 	s := actor.GetStatus()
-	if s.GetPendingNativeSnapshot() != nil || s.GetInProgressSnapshotUri() != "" || s.GetInProgressLocalSnapshotName() != "" {
-		return status.Error(codes.FailedPrecondition, "native snapshot completion is unresolved; retain operation ownership")
+	if s.GetPendingNativeOperation() != nil || strings.Contains(s.GetCrash().GetMessage(), "atelet ") || s.GetInProgressSnapshotUri() != "" || s.GetInProgressLocalSnapshotName() != "" {
+		return status.Error(codes.FailedPrecondition, "native operation completion is unresolved; retain operation ownership")
 	}
 	return nil
+}
+
+func (w *ActorWorkflow) settleNativeTermination(ctx context.Context, ref resources.ActorRef, actor *ateapipb.Actor) error {
+	_, err := w.store.UpdateActor(ctx, ref, store.PreconditionFrom(actor), func(a *ateapipb.Actor) error {
+		if a.GetStatus().GetPendingNativeOperation().GetOperation() != "terminate" {
+			return status.Error(codes.FailedPrecondition, "termination operation changed before settlement")
+		}
+		a.Status.PendingNativeOperation = nil
+		return nil
+	})
+	return err
 }

@@ -712,6 +712,9 @@ func (w *ActorWorkflow) ensureAteletRestored(ctx context.Context, actorRef resou
 		}
 		tele.WireSnapshotScope = ateattr.SnapshotScopeValue(req.Scope)
 
+		if actor, err = w.recordNativeOperationOrigin(ctx, actorRef, actor, "restore", req); err != nil {
+			return tele, err
+		}
 		if _, err = client.Restore(ctx, req); err != nil {
 			slog.LogAttrs(ctx, slog.LevelError, "Setting Actor to crashed due to error",
 				append(ateattr.ActorRefLogAttrs(actorRef), slog.Any("err", err))...)
@@ -763,6 +766,9 @@ func (w *ActorWorkflow) ensureAteletRestored(ctx context.Context, actorRef resou
 			CpuMilli:          cpuMilli,
 			MemoryBytes:       memBytes,
 		}
+		if actor, err = w.recordNativeOperationOrigin(ctx, actorRef, actor, "restore", req); err != nil {
+			return tele, err
+		}
 		if _, err = client.Restore(ctx, req); err != nil {
 			slog.LogAttrs(ctx, slog.LevelError, "Setting Actor to crashed due to error",
 				append(ateattr.ActorRefLogAttrs(actorRef), slog.Any("err", err))...)
@@ -788,6 +794,9 @@ func (w *ActorWorkflow) ensureAteletRestored(ctx context.Context, actorRef resou
 			EgressGateway:         egressGateway,
 			CpuMilli:              cpuMilli,
 			MemoryBytes:           memBytes,
+		}
+		if actor, err = w.recordNativeOperationOrigin(ctx, actorRef, actor, "run", req); err != nil {
+			return tele, err
 		}
 		if _, err = client.Run(ctx, req); err != nil {
 			slog.LogAttrs(ctx, slog.LevelError, "Setting Actor to crashed due to error",
@@ -818,8 +827,12 @@ func (w *ActorWorkflow) finalizeRunning(ctx context.Context, actorRef resources.
 		return nil, err
 	}
 
+	if latestActor.GetStatus().GetState() != ateapipb.ActorState_ACTOR_STATE_RESUMING {
+		return nil, status.Error(codes.FailedPrecondition, "resume publication requires RESUMING; origin retained")
+	}
 	storedActor, err := w.store.UpdateActor(ctx, actorRef, store.PreconditionFrom(latestActor), func(toUpdate *ateapipb.Actor) error {
 		toUpdate.Status.State = ateapipb.ActorState_ACTOR_STATE_RUNNING
+		toUpdate.Status.PendingNativeOperation = nil
 		return nil
 	})
 	if err != nil {

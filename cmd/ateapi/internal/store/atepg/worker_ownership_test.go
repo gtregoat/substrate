@@ -185,6 +185,15 @@ func TestProveEmptyDraining_IdentityAndNameReuse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// A new store instance recovers a lost proof response from durable records.
+	fresh, err := Connect(ctx, containerDSN, "public")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fresh.pool.Close()
+	defer fresh.Close()
+	proof, proofErr := fresh.ProveEmptyDraining(ctx, drained)
+	requireOwnershipProof(t, proof, proofErr, drained)
 	for _, missing := range []func(*ateapipb.Worker){func(w *ateapipb.Worker) { w.Metadata.Uid = "" }, func(w *ateapipb.Worker) { w.Metadata.Version = 0 }, func(w *ateapipb.Worker) { w.Metadata.Version = -1 }} {
 		expected := proto.CloneOf(drained)
 		missing(expected)
@@ -415,4 +424,47 @@ func requireOwnershipProof(t *testing.T, proof *ateapipb.ProveEmptyDrainingRespo
 	if err != nil || proof == nil || !proto.Equal(proof.GetWorker(), worker) || len(proof.GetOwnershipGeneration()) != len("observed-v1:")+64 {
 		t.Fatalf("incomplete exact worker proof: proof=%v err=%v", proof, err)
 	}
+}
+
+func TestNativeSnapshotOwnership_UnknownSurvivesMutationRefusal(t *testing.T) {
+	p := setupPostgresPersistence(t)
+	ctx := context.Background()
+	createTestAtespace(t, p, "origin-team")
+	op := &ateapipb.NativeOperationOwnership{Operation: "checkpoint-local", LocalSnapshotName: "pending"}
+	op.ProtoReflect().SetUnknown([]byte{0xa0, 0x06, 0x01})
+	actor, err := p.CreateActor(ctx, &ateapipb.Actor{
+		Metadata: &ateapipb.ResourceMetadata{Atespace: "origin-team", Name: "pending"},
+		Status:   &ateapipb.ActorStatus{State: ateapipb.ActorState_ACTOR_STATE_CRASHED, InProgressLocalSnapshotName: "pending", PendingNativeOperation: op},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var before, after []byte
+	if err := p.pool.QueryRow(ctx, `SELECT proto FROM actors WHERE uid = $1`, actor.GetMetadata().GetUid()).Scan(&before); err != nil {
+		t.Fatal(err)
+	}
+	_, err = p.UpdateActor(ctx, resources.ActorRefFromActor(actor), store.PreconditionFrom(actor), func(a *ateapipb.Actor) error { a.Status.PendingNativeOperation = nil; return nil })
+	requireOwnershipRefusal(t, nil, err, store.OwnershipUnknown)
+	if err := p.pool.QueryRow(ctx, `SELECT proto FROM actors WHERE uid = $1`, actor.GetMetadata().GetUid()).Scan(&after); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("mutation erased uncertain ownership")
+	}
+	fresh, err := Connect(ctx, containerDSN, "public")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fresh.pool.Close()
+	defer fresh.Close()
+	worker, err := fresh.CreateWorker(ctx, ownershipTestWorker())
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker, err = fresh.DrainEmptyWorker(ctx, worker.GetMetadata().GetName(), store.PreconditionFrom(worker))
+	if err != nil {
+		t.Fatal(err)
+	}
+	proof, err := fresh.ProveEmptyDraining(ctx, worker)
+	requireOwnershipRefusal(t, proof, err, store.OwnershipUnknown)
 }

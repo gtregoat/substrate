@@ -5110,8 +5110,8 @@ func TestRevertActor_FromCrashed(t *testing.T) {
 }
 
 // TestRevertActor_TerminateFailureCrashes verifies that an atelet error while
-// terminating the discarded execution crashes the actor, and that a later
-// successful revert clears the recorded crash.
+// terminating the discarded execution crashes the actor. A later call must
+// preserve uncertain native origin instead of treating an error as settlement.
 func TestRevertActor_TerminateFailureCrashes(t *testing.T) {
 	ns := namespaceForTest("ns-revert-terminate-crash")
 	tc := setupTest(t, ns)
@@ -5146,11 +5146,12 @@ func TestRevertActor_TerminateFailureCrashes(t *testing.T) {
 	tc.fakeAtelet.FailTerminate = nil
 	tc.fakeAtelet.Lock.Unlock()
 	reverted, err := tc.client.RevertActor(ctx, &ateapipb.RevertActorRequest{Actor: actorRef})
-	if err != nil {
-		t.Fatalf("second RevertActor failed: %v", err)
+	if status.Code(err) != codes.FailedPrecondition || reverted != nil {
+		t.Fatalf("uncertain native termination was forgotten: %v %v", reverted, err)
 	}
-	if got := reverted.GetActor().GetStatus().GetCrash(); got != nil {
-		t.Errorf("Crash = %v, want cleared by the successful revert", got)
+	actor, err := tc.client.GetActor(ctx, &ateapipb.GetActorRequest{Actor: actorRef})
+	if err != nil || actor.GetStatus().GetPendingNativeOperation().GetOperation() != "terminate" || actor.GetStatus().GetCrash() == nil {
+		t.Fatalf("failed terminate origin/crash must remain: %v %v", actor, err)
 	}
 }
 
