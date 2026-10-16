@@ -113,8 +113,18 @@ func setupTest(t *testing.T, ns string) *testContext {
 // test owns its own plugin set.
 func setupTestWithVolumePlugins(t *testing.T, ns string, plugins map[string]volume.VolumePluginControlPlane) *testContext {
 	t.Helper()
+	return setupTestWithWrappedStore(t, ns, plugins, nil)
+}
+
+// Wrappers add barriers around production persistence calls; they never
+// implement assignment, lifecycle, or proof decisions themselves.
+func setupTestWithWrappedStore(t *testing.T, ns string, plugins map[string]volume.VolumePluginControlPlane, wrap func(store.Interface) store.Interface) *testContext {
+	t.Helper()
 	// 1. Start an isolated PostgreSQL-backed store.
 	persistence, cleanupStore := storetest.SetupTestStore(t)
+	if wrap != nil {
+		persistence = wrap(persistence)
+	}
 
 	// 2. Initialize Clientsets using global cfg
 	k8sClient, err := kubernetes.NewForConfig(cfg)

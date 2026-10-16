@@ -1,3 +1,54 @@
+# Worker retirement evidence and remaining consumer boundary
+
+The current producer has an exact-incarnation positive branch and retained
+native snapshot provenance. Its scope and required consumer composition are
+specified in [the API contract](prove-empty-draining.md). No node-wide durable
+fence, history deletion, live cleanup, consumer activation or Goat source change
+is part of this native component.
+
+## Current source and validation boundaries
+
+The assigned branch starts at authorized main
+`74f71ca7bbe8dc9516f4498dd1027d017f537001` and preserves retained head
+`3ddfa260814962fb9469b177ca8ecf1f4eff3d59` (including a14 and 764) as an ancestor.
+Canonical088 FAILED at 23:42:01 and its original native task later completed
+at 23:50:54 on 3dd. Those are separate historical facts; neither is rewritten.
+The late report was PARTLY_DONE, and its missing-tool executions do not validate
+this correction. The historical node-wide-fence argument below is retained as
+history, not a current producer requirement or a proved production race.
+
+Producer source includes tests for exact positive/refusal effects, raw
+unknown ownership, both binding orders, lost-result identity readback,
+production Bind/Pause/Resume/upload composition, reservation-to-local handoff,
+and ambiguous checkpoint failure before/after accepted local work. Test source
+is not execution evidence. Required CGO/race/PostgreSQL, codegen and `make
+verify` outcomes must be reported for the exact pushed SHA; missing tools and
+skips are never acceptance. No older a14 run validates this source.
+
+## Consumer work and release evidence still owned by Mission Control
+
+Before activation, Goat must enforce protection at worker creation/eligibility
+(including already unprotected Pods), preserve ACTIVE/unknown protection, and
+include protected terminal/local-data Pods in node-deletion safety. It must wire
+native evidence into the existing durable drain intent/readback/proof/cooldown
+flow with exact identity rechecks, owner warm capacity and pending demand.
+Its already protected, newly created/racing, and protected terminal sibling
+cases must run through actual creation/registration and deletion predicates.
+Native source alone does not close those separate component boundaries.
+
+Newly recorded uncertain native operations preserve exact dispatch origin.
+Delete/revert deliberately refuse until completion is separately evidenced;
+there is no speculative settlement by statistics, external URI presence or
+Pod disappearance. Legacy unlocated in-progress records also refuse. A
+future reconciliation mechanism must establish native lifecycle settlement
+before clearing them; it cannot discard data/history to manufacture eligibility.
+
+## Archived pre-correction investigation (superseded)
+
+The following text records the prior refusal-only implementation and its design
+inference. Its unconditional-refusal status and proposed node-wide fence are
+superseded by the current per-worker contract and bounded provenance fix.
+
 # Worker retirement evidence: unresolved native boundary
 
 Status: the native RPC/store typed-refusal path is implemented; stable positive

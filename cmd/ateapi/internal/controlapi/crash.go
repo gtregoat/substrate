@@ -88,7 +88,7 @@ func crashActor(ctx context.Context, st crashActorStore, actorRef resources.Acto
 			toUpdate.Status.Crash = newActorCrash(opName, message)
 		}
 
-		// PendingNativeSnapshot is retained: an RPC error is not settlement.
+		// PendingNativeOperation is retained: an RPC error is not settlement.
 		// InProgressSnapshotUri and InProgressLocalSnapshotName are kept so a
 		// later DeleteActor or RevertActor can delete what they name: each is
 		// the only pointer to it, so clearing them here would leak the objects
