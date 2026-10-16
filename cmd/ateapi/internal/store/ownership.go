@@ -15,6 +15,11 @@
 // Package store contains common types for the persistence layer.
 package store
 
+import (
+	"github.com/agent-substrate/substrate/pkg/proto/ateapipb"
+	"strings"
+)
+
 // OwnershipRefusal identifies a missing native fact. It never carries partial
 // success. Consumers must keep protection for every refusal, including unknown
 // reasons from newer servers.
@@ -32,3 +37,23 @@ const (
 	OwnershipUnknown           = "OWNERSHIP_UNKNOWN"
 	OwnershipStabilityUnproven = "OWNERSHIP_STABILITY_UNPROVEN"
 )
+
+// UnlocatedNativeFailure recognizes legacy failure envelopes only to refuse
+// evidence/recovery, never to fabricate a worker/node attribution or settlement.
+// Pod loss during a lifecycle step could hide accepted work even when an older
+// writer erased its local identifier. A qualified persisted origin scopes it.
+func UnlocatedNativeFailure(s *ateapipb.ActorStatus) bool {
+	if s.GetPendingNativeOperation() != nil {
+		return false
+	}
+	message := s.GetCrash().GetMessage()
+	if strings.Contains(message, "atelet ") {
+		return true
+	}
+	for _, prefix := range []string{"resume failed:", "pause failed:", "suspend failed:", "revert failed:"} {
+		if strings.HasPrefix(message, prefix) {
+			return true
+		}
+	}
+	return false
+}

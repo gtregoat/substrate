@@ -77,6 +77,9 @@ func TestEnsurePausedFinalized_WorkerGone(t *testing.T) {
 	if msg, want := got.GetStatus().GetCrash().GetMessage(), "pause failed: "+crashMessageLocalSnapshotNodeUnknown; msg != want {
 		t.Errorf("crash message = %q, want %q", msg, want)
 	}
+	if got.GetStatus().GetLocalSnapshot() != nil || got.GetStatus().GetInProgressLocalSnapshotName() != "local-snap-1" {
+		t.Error("failed publication must retain the in-progress identifier without promoting a local snapshot")
+	}
 	for _, n := range got.GetStatus().GetLocalSnapshot().GetNodeVmsWithLocalSnapshots() {
 		if n == "" {
 			t.Errorf("BUG: empty string in NodeVmsWithLocalSnapshots, the scheduler's node restriction would never match a real worker")
