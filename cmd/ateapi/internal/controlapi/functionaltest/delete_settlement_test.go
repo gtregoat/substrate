@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/agent-substrate/substrate/cmd/ateapi/internal/controlapi"
 	"github.com/agent-substrate/substrate/cmd/ateapi/internal/store"
 	"github.com/agent-substrate/substrate/internal/resources"
 	"github.com/agent-substrate/substrate/internal/volume"
@@ -34,8 +35,8 @@ import (
 // resource cleanup remain production implementations.
 type terminationSettlementStore struct {
 	store.Interface
-	mu sync.Mutex
-	mode string
+	mu       sync.Mutex
+	mode     string
 	failRead bool
 }
 
@@ -163,6 +164,13 @@ func TestDeleteActor_TerminationSettlementBoundary(t *testing.T) {
 				if !proto.Equal(after.GetStatus().GetWorkerAssignment(), before.GetStatus().GetWorkerAssignment()) {
 					t.Fatal("worker ownership released")
 				}
+				liveWorker := retirementReadback(t, tc, ctx, worker)
+				if liveWorker.GetStatus().GetAllocated().GetActors() != 1 {
+					t.Fatal("pending termination released the worker reservation")
+				}
+				if _, err := tc.client.DrainEmptyWorker(ctx, &ateapipb.DrainEmptyWorkerRequest{Worker: &ateapipb.ObjectRef{Name: liveWorker.GetMetadata().GetName()}, Uid: liveWorker.GetMetadata().GetUid(), Version: liveWorker.GetMetadata().GetVersion()}); status.Code(err) != codes.FailedPrecondition {
+					t.Fatalf("pending termination made worker releasable: %v", err)
+				}
 				plugin.mu.Lock()
 				detaches, deletes := plugin.detachAttempts, len(plugin.deleted)
 				plugin.mu.Unlock()
@@ -172,7 +180,8 @@ func TestDeleteActor_TerminationSettlementBoundary(t *testing.T) {
 				if unknown {
 					// A new request has no positive ACK knowledge. It must hold,
 					// not replay Terminate or manufacture settlement.
-					if _, err := tc.client.DeleteActor(ctx, &ateapipb.DeleteActorRequest{Actor: ref, AnyState: true}); status.Code(err) != codes.FailedPrecondition {
+					restarted := controlapi.NewRPCService(tc.persistence, nil, nil, nil, nil, nil, nil, "", 10*time.Second, nil, nil, "", nil, nil)
+					if _, err := restarted.DeleteActor(ctx, &ateapipb.DeleteActorRequest{Actor: ref, AnyState: true}); status.Code(err) != codes.FailedPrecondition {
 						t.Fatalf("unknown completion retried: %v", err)
 					}
 				} else {

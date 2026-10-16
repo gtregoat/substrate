@@ -58,7 +58,8 @@ func (w *ActorWorkflow) DeleteActor(ctx context.Context, actorRef resources.Acto
 		return nil, err
 	}
 
-	// DeleteActor will attempt best-effort cleanup across all steps, collecting any errors.
+	// Cleanup may collect independent errors only after native termination and
+	// durable settlement. Failure at that boundary must retain all resources.
 	// If any step fails, errors are returned so the caller can retry, and the actor record
 	// is retained in the store in the DELETING state.
 	// TODO: Ensure GC collects all the remaining resources if the cleanup fails.
@@ -142,7 +143,12 @@ func (w *ActorWorkflow) ensureAteletTerminated(ctx context.Context, actorRef res
 	defer func() { err = done(err) }()
 
 	if acknowledgedNativeTermination(actor) {
-		return nil
+		// Verify the raw ownership envelope even on a retry after a positive
+		// ACK; public reads deliberately discard unknown protobuf fields.
+		_, err := w.store.UpdateActor(ctx, actorRef, store.PreconditionFrom(actor), func(a *ateapipb.Actor) error {
+			return requireSettledNativeOperation(a)
+		})
+		return err
 	}
 
 	assignment := actor.GetStatus().GetWorkerAssignment()

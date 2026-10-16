@@ -36,6 +36,8 @@ UID/version, Pod/node and assignment, or the local source for a paused upload
 retain this origin independently of scheduling reservations. A URI or pure
 workload statistics read never settles it. Successful lifecycle publication
 clears pending ownership atomically with its replacement snapshot state.
+Termination instead retains the exact envelope as `terminate-acknowledged`
+until delete/revert cleanup finishes; it continues to protect the source node.
 
 The request digest also pins dispatch parameters. Successful Run/Restore
 settles into the live RUNNING pointer; successful Terminate settles only its
@@ -111,3 +113,43 @@ Native implementation/test source is not deployed acceptance. Mission Control
 owns publication and subsequent review, CI, Kargo deployment, Goat integration
 and deployed acceptance. The default-off live guard is unchanged. See the
 [remaining integration/evidence boundary](worker-retirement-evidence-gap.md).
+
+## Termination settlement and retry boundary
+
+Delete stops before detach, volume deletion, worker release and object-prefix
+deletion if Terminate or durable settlement fails. After successful settlement,
+it reloads the actor, checks UID and DELETING state, and verifies the raw pending
+envelope through the production CAS boundary before destructive cleanup.
+Detach/release failures also stop subsequent destructive cleanup.
+
+A successful native Terminate response is positive knowledge for that exact
+persisted request digest and source incarnation. The settlement CAS changes only
+the envelope's operation to `terminate-acknowledged`, preserving its ownership.
+A lost settlement response may reconcile by reading back that exact ACK record.
+A version conflict permits one bounded retry only when UID, lifecycle state,
+assignment and the entire pending origin are unchanged. Read uncertainty,
+changed origin or repeated conflict refuses cleanup. No native RPC is replayed
+by this reconciliation. The ACK record survives retryable later cleanup errors;
+delete/revert retries skip Terminate and finish ordinary cleanup. Revert clears
+the record only in its final successful lifecycle publication. Unknown fields
+in the stored envelope still refuse updates. Older servers refuse the new
+operation string conservatively; no database migration or wire field is added.
+
+**Unresolved acceptance:** a process interruption after native acceptance but
+before durable ACK settlement retains `terminate`, not a positive completion.
+The native `TerminateRequest` has no operation-result query/token, and atelet's
+Terminate first reads the sandbox record before terminating/removing it
+(`cmd/atelet/main.go`, Terminate). A later NotFound does not establish that the
+same request completed. Lost native ACK, timeout and such interruption therefore
+hold exact origin and refuse delete/revert without destructive cleanup. Forward
+recovery of genuinely unknown completion needs a separately evidenced,
+exact-identity native settlement capability; this implementation does not
+supply it or automatically replay unknown work.
+
+`functionaltest/delete_settlement_test.go` exercises production DeleteActor,
+PG, Resume/Suspend history, an external volume and actor-owned snapshot objects,
+with faults at the fake native and real store transaction boundaries. It covers
+lost ACK/timeout, settlement write/read uncertainty, bounded same-origin CAS
+reconciliation, lost settlement ACK, successful cleanup and cleanup retry after
+a positive ACK. These are source tests until actually executed with the required
+PG/race harness.

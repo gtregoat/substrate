@@ -123,7 +123,7 @@ func acknowledgedNativeTermination(actor *ateapipb.Actor) bool {
 	s := actor.GetStatus()
 	op := s.GetPendingNativeOperation()
 	if op.GetOperation() != terminatedAcknowledged ||
-		(s.GetState() != ateapipb.ActorState_ACTOR_STATE_DELETING && s.GetState() != ateapipb.ActorState_ACTOR_STATE_REVERTING) {
+		(s.GetState() != ateapipb.ActorState_ACTOR_STATE_DELETING && s.GetState() != ateapipb.ActorState_ACTOR_STATE_REVERTING && s.GetState() != ateapipb.ActorState_ACTOR_STATE_CRASHED) {
 		return false
 	}
 	digest, err := hex.DecodeString(op.GetRequestDigest())

@@ -99,3 +99,46 @@ func TestRecordNativeOperationOrigin_IdentityAndRetry(t *testing.T) {
 		t.Fatalf("refusals changed recorded origin: %v %v", after, err)
 	}
 }
+
+func TestAcknowledgedTerminationRetainsExactOrigin(t *testing.T) {
+	worker := validWorker(apiWorkerName)
+	worker.Metadata.Uid = "settled-worker"
+	assignment := workerAssignmentFrom(worker)
+	actor := &ateapipb.Actor{Status: &ateapipb.ActorStatus{
+		State: ateapipb.ActorState_ACTOR_STATE_DELETING,
+		WorkerAssignment: proto.CloneOf(assignment),
+		PendingNativeOperation: &ateapipb.NativeOperationOwnership{
+			Operation: terminatedAcknowledged,
+			RequestDigest: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+			SourceWorker: worker,
+			Assignment: assignment,
+		},
+	}}
+	if err := requireSettledNativeOperation(actor); err != nil {
+		t.Fatalf("positive ACK blocked cleanup: %v", err)
+	}
+	for _, mutate := range []func(*ateapipb.Actor){
+		func(a *ateapipb.Actor) { a.Status.PendingNativeOperation.Operation = "terminate" },
+		func(a *ateapipb.Actor) { a.Status.PendingNativeOperation.RequestDigest = "unknown" },
+		func(a *ateapipb.Actor) { a.Status.PendingNativeOperation.SourceWorker.Metadata.Uid = "" },
+		func(a *ateapipb.Actor) { a.Status.PendingNativeOperation.Assignment.WorkerPodUid = "replaced" },
+		func(a *ateapipb.Actor) { a.Status.WorkerAssignment.NodeName = "another-node" },
+		func(a *ateapipb.Actor) { a.Status.State = ateapipb.ActorState_ACTOR_STATE_RUNNING },
+	} {
+		changed := proto.CloneOf(actor)
+		mutate(changed)
+		if err := requireSettledNativeOperation(changed); status.Code(err) != codes.FailedPrecondition {
+			t.Fatalf("changed/unknown termination accepted: %v %v", changed, err)
+		}
+	}
+	// Release may already have committed before later cleanup fails. The
+	// positive envelope retains the original coordinates independently.
+	actor.Status.WorkerAssignment = nil
+	if err := requireSettledNativeOperation(actor); err != nil {
+		t.Fatalf("released assignment erased positive ACK: %v", err)
+	}
+	actor.Status.State = ateapipb.ActorState_ACTOR_STATE_CRASHED
+	if err := requireSettledNativeOperation(actor); err != nil {
+		t.Fatalf("worker-loss crash erased positive ACK: %v", err)
+	}
+}
