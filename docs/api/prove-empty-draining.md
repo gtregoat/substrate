@@ -54,7 +54,10 @@ requires a complete RUNNING assignment, its durable actor-UID claim, matching
 authoritative live worker/Pod/node and allocation, an assignment on a recorded
 snapshot-owning node, and no pending snapshot operation. Snapshot validation
 still runs. Missing/malformed pointers or claims remain unknown. The live
-assignment continues to block its node; RUNNING alone is never disposal proof.
+assignment blocks retirement of its own worker. A qualified distinct RUNNING
+sibling on the same node does not block this per-worker proof; its independent
+protection must still guard node retention. Pending native operations and actual
+node-local checkpoints continue to block. RUNNING alone is never disposal proof.
 
 ## Consumer prerequisites before activation
 

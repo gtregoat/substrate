@@ -409,11 +409,17 @@ func TestQualifiedRunningAssignment(t *testing.T) {
 	if qualifiedRunningAssignment(actor, nil, claim) || qualifiedRunningAssignment(actor, live, nil) {
 		t.Fatal("missing live worker or durable claim qualified")
 	}
-	// Even qualified historical metadata leaves the current node dependency.
+	// The live assignment still blocks retirement of its own worker.
 	err := actorRetirementDependency(actor, live, live, claim)
 	requireOwnershipRefusal(t, nil, err, store.OwnershipBusy)
 	other := proto.CloneOf(live)
 	other.Metadata.Name = "other-worker"
+	other.Metadata.Uid = "55555555-5555-4555-8555-555555555555"
+	other.WorkerPod = "sibling-pod"
+	other.WorkerPodUid = "66666666-6666-4666-8666-666666666666"
+	if err := actorRetirementDependency(actor, other, live, claim); err != nil {
+		t.Fatalf("qualified sibling on the same node blocked worker retirement: %v", err)
+	}
 	other.NodeName = "other-node"
 	if err := actorRetirementDependency(actor, other, live, claim); err != nil {
 		t.Fatalf("independent node acquired a dependency on historical metadata: %v", err)

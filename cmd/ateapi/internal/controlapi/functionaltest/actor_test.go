@@ -3697,8 +3697,8 @@ func TestPauseActor(t *testing.T) {
 	if err != nil || claim.GetActorUid() != running.GetMetadata().GetUid() {
 		t.Fatalf("resumed actor lacks its durable claim: claim=%v err=%v", claim, err)
 	}
-	// A drained sibling on the same node must still encounter the live actor
-	// dependency. This checks producer refusal, not node deletion or release.
+	// A qualified resumed actor retains its own worker, allowing an empty
+	// sibling to retire. Independent sibling protection still guards the node.
 	sibling, err := tc.persistence.CreateWorker(context.Background(), &ateapipb.Worker{
 		Metadata:        &ateapipb.ResourceMetadata{Name: "55555555-5555-4555-8555-555555555555"},
 		WorkerNamespace: ns,
@@ -3717,9 +3717,8 @@ func TestPauseActor(t *testing.T) {
 		t.Fatal(err)
 	}
 	proof, err := tc.persistence.ProveEmptyDraining(context.Background(), sibling)
-	var refusal *store.OwnershipRefusal
-	if proof != nil || !errors.As(err, &refusal) || refusal.Reason != store.OwnershipBusy {
-		t.Fatalf("live owning-node assignment must block sibling proof: proof=%v err=%v", proof, err)
+	if err != nil || proof == nil || !proto.Equal(proof.GetWorker(), sibling) || proof.GetOwnershipGeneration() == "" {
+		t.Fatalf("qualified resumed sibling must permit exact empty-worker proof: proof=%v err=%v", proof, err)
 	}
 }
 

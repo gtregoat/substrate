@@ -214,6 +214,10 @@ func actorRetirementDependency(actor *ateapipb.Actor, worker, live *ateapipb.Wor
 			return ownershipRefusal(store.OwnershipUnknown)
 		}
 		historical = true
+		// A qualified distinct worker retains its own live assignment. Shared
+		// placement alone is not a dependency on this worker's retirement;
+		// independent sibling protection is the consumer's node-safety guard.
+		relevant = s.GetWorkerAssignment().GetWorker().GetName() == worker.GetMetadata().GetName()
 	}
 	if local := s.GetLocalSnapshot(); local != nil {
 		if len(validation.IsDNS1123Label(local.GetSnapshotName())) != 0 || len(local.GetNodeVmsWithLocalSnapshots()) == 0 {
