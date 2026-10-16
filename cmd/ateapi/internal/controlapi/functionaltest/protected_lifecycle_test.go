@@ -22,6 +22,7 @@ import (
 
 	"github.com/agent-substrate/substrate/cmd/ateapi/internal/controlapi"
 	"github.com/agent-substrate/substrate/cmd/ateapi/internal/store"
+	"github.com/agent-substrate/substrate/internal/proto/ateletpb"
 	"github.com/agent-substrate/substrate/internal/resources"
 	"github.com/agent-substrate/substrate/pkg/proto/ateapipb"
 	"google.golang.org/grpc/codes"
@@ -338,6 +339,108 @@ func TestWorkerProtection_TerminalReceiptRecovery(t *testing.T) {
 			}
 			if after.GetStatus().GetState() != expected {
 				t.Fatalf("wrong publication: %v", after)
+			}
+		})
+	}
+}
+
+func TestWorkerProtection_OperationDrainInterleavings(t *testing.T) {
+	for _, op := range []string{"run", "checkpoint", "upload"} {
+		t.Run(op, func(t *testing.T) {
+			ns := namespaceForTest("ns-gated-barrier-" + op)
+			tc := setupTestWithWrappedStore(t, ns, nil, nil, func(s *controlapi.RPCService) {
+				kube, err := kubernetes.NewForConfig(cfg)
+				if err != nil {
+					t.Fatal(err)
+				}
+				s.EnableWorkerProtection(kube)
+			})
+			defer tc.cleanup()
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			createTemplate(t, tc, ns)
+			workerName := createWorkerPod(t, tc, ns, "worker", "node1", "pool1")
+			protectLifecyclePod(t, tc, ctx, ns, "worker", true)
+			ref := &ateapipb.ObjectRef{Atespace: testAtespace, Name: "barrier"}
+			if _, err := tc.client.CreateActor(ctx, &ateapipb.CreateActorRequest{Actor: &ateapipb.Actor{Metadata: &ateapipb.ResourceMetadata{Atespace: testAtespace, Name: ref.Name}, ActorTemplate: &ateapipb.ObjectRef{Atespace: testAtespace, Name: "tmpl1"}}}); err != nil {
+				t.Fatal(err)
+			}
+			if op != "run" {
+				if _, err := tc.client.ResumeActor(ctx, &ateapipb.ResumeActorRequest{Actor: ref}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if op == "upload" {
+				if _, err := tc.client.PauseActor(ctx, &ateapipb.PauseActorRequest{Actor: ref}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			entered, release := make(chan struct{}), make(chan struct{})
+			var once sync.Once
+			barrier := func(ctx context.Context) error {
+				close(entered)
+				select {
+				case <-release:
+					return nil
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+			}
+			tc.fakeAtelet.Lock.Lock()
+			switch op {
+			case "run":
+				tc.fakeAtelet.BeforeRun = func(ctx context.Context, _ *ateletpb.RunRequest) error { return barrier(ctx) }
+			case "checkpoint":
+				tc.fakeAtelet.BeforeCheckpoint = func(ctx context.Context, _ *ateletpb.CheckpointRequest) error { return barrier(ctx) }
+			case "upload":
+				tc.fakeAtelet.BeforeUpload = func(ctx context.Context, _ *ateletpb.UploadPausedCheckpointRequest) error { return barrier(ctx) }
+			}
+			tc.fakeAtelet.Lock.Unlock()
+			done := make(chan error, 1)
+			go func() {
+				var err error
+				switch op {
+				case "run":
+					_, err = tc.client.ResumeActor(ctx, &ateapipb.ResumeActorRequest{Actor: ref})
+				case "checkpoint":
+					_, err = tc.client.PauseActor(ctx, &ateapipb.PauseActorRequest{Actor: ref})
+				case "upload":
+					_, err = tc.client.SuspendActor(ctx, &ateapipb.SuspendActorRequest{Actor: ref})
+				}
+				done <- err
+			}()
+			defer func() { once.Do(func() { close(release) }); <-done }()
+			select {
+			case <-entered:
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			}
+			worker, err := tc.client.GetWorker(ctx, &ateapipb.GetWorkerRequest{Worker: &ateapipb.ObjectRef{Name: workerName}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			drained, err := tc.client.DrainEmptyWorker(ctx, &ateapipb.DrainEmptyWorkerRequest{Worker: &ateapipb.ObjectRef{Name: workerName}, Uid: worker.GetMetadata().GetUid(), Version: worker.GetMetadata().GetVersion()})
+			if op == "upload" {
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := tc.client.ProveEmptyDraining(ctx, &ateapipb.ProveEmptyDrainingRequest{ExpectedWorker: drained}); status.Code(err) != codes.FailedPrecondition {
+					t.Fatalf("inflight upload allowed proof: %v", err)
+				}
+			} else if status.Code(err) != codes.FailedPrecondition {
+				t.Fatalf("inflight assignment allowed drain: %v", err)
+			}
+			once.Do(func() { close(release) })
+			// Put the result back for the cleanup join, so failures also leave no worker.
+			result := <-done
+			done <- result
+			if result != nil {
+				t.Fatal(result)
+			}
+			if op == "upload" {
+				if _, err := tc.client.ProveEmptyDraining(ctx, &ateapipb.ProveEmptyDrainingRequest{ExpectedWorker: drained}); err != nil {
+					t.Fatalf("settled upload did not allow proof: %v", err)
+				}
 			}
 		})
 	}
