@@ -247,6 +247,8 @@ type Interface interface {
 	//
 	// ErrNotFound if the Worker is gone.
 	BindActorToWorker(ctx context.Context, workerName string, assignment *ateapipb.ActorAssignment, admit func(*ateapipb.Worker) error) error
+	// CheckWorkerAssignment validates an existing reservation under the worker lock, without writes.
+	CheckWorkerAssignment(ctx context.Context, workerName, actorUID string, admit func(*ateapipb.Worker) error) (*ateapipb.Worker, error)
 
 	// ReleaseActorFromWorker removes an assignment and updates allocation,
 	// returning the Worker as it now stands so the caller can feed the

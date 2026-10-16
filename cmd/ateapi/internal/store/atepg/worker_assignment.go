@@ -325,3 +325,33 @@ func (p *Persistence) FindWorkerHostingActor(ctx context.Context, actorUID strin
 	}
 	return workerName, nil
 }
+
+// CheckWorkerAssignment revalidates a retry without inserting, releasing or
+// replacing its reservation. Raw protobuf decoding preserves unknown fields.
+func (p *Persistence) CheckWorkerAssignment(ctx context.Context, workerName, actorUID string, admit func(*ateapipb.Worker) error) (*ateapipb.Worker, error) {
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+	worker, err := getWorkerForUpdate(ctx, tx, workerName)
+	if err != nil {
+		return nil, err
+	}
+	_, owner, err := getAssignmentRow(ctx, tx, actorUID)
+	if err != nil {
+		return nil, err
+	}
+	if owner != workerName {
+		return nil, store.ErrVersionConflict
+	}
+	if admit != nil {
+		if err := admit(worker); err != nil {
+			return nil, err
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return worker, nil
+}

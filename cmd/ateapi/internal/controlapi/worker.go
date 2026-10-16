@@ -469,3 +469,7 @@ func (s *RPCService) ProveEmptyDraining(ctx context.Context, req *ateapipb.Prove
 	}
 	return proof, err
 }
+
+func (s *ServiceImpl) CheckWorkerAssignment(ctx context.Context, workerName, actorUID string, admit func(*ateapipb.Worker) error) (*ateapipb.Worker, error) {
+	return s.store.CheckWorkerAssignment(ctx, workerName, actorUID, admit)
+}
