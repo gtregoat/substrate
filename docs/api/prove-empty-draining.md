@@ -1,81 +1,110 @@
 # ProveEmptyDraining native contract
 
 `ateapi.Control/ProveEmptyDraining` is an authenticated, global-worker-scoped
-ownership-evidence boundary. It takes `expected_worker`, the complete Worker
-returned by a successful fresh `GetWorker`. The caller must preserve name,
-UID, positive version, namespace, pool, Pod name, Pod UID, node name, IP and
-sandbox class. It must observe DRAINING. Namespace overrides, partial identity,
-stale revisions and name reuse do not waive any precondition.
+per-worker retirement evidence boundary. It takes `expected_worker`, the
+complete Worker from a fresh successful `GetWorker`: name, UID, positive
+version, namespace, pool, Pod name/UID, node name, IP, sandbox class and
+DRAINING state. Partial, stale, unknown and reused identities refuse. There
+is no name-only fallback and legacy `DrainWorker` is unchanged.
 
-The current implementation provides concrete native refusals. **It does not grant release eligibility.** In
-particular, an actually empty worker with independently retained external data
-returns `OWNERSHIP_STABILITY_UNPROVEN`, rather than a success-shaped empty
-response. The real useful positive proof requested in the original objective
-remains unimplemented. The authorized next correction must retain uncertain
-operation origin through crash and later lifecycle transitions before enabling
-the clean-worker success path; no additional owner authorization is needed.
+## Positive evidence and its scope
 
-The store holds the same PostgreSQL worker row lock used by assignment and
-drain, checks SQL/protobuf identity consistency, DRAINING, exact mapping,
-allocation, durable assignments, actor pointers and local checkpoints. It reads
-raw protobufs without the public read path's deliberate unknown-field discard.
-Corrupt/unknown data is uncertainty. No worker, actor, assignment, snapshot,
-volume, version or outbox row is changed. An unrelated external snapshot or
-historical actor alone is not a node-local dependency. Resume legitimately
-retains pause snapshot metadata. Treating it as historical requires a complete
-RUNNING assignment, its durable actor-UID claim, and a matching authoritative
-worker incarnation/Pod/node observation from the same SQL read. The assignment
-must still be on a recorded snapshot-owning node and have no pending snapshot
-operation. Missing/malformed pointers, missing claims and inconsistent mappings
-remain unknown; RUNNING alone never suppresses snapshot validation. The live
-assignment still blocks proof for its own node. This observation does not
-settle a failed native operation or establish node-retirement authority.
+The store locks the exact worker row using the production binding lock,
+checks SQL/protobuf identity consistency, caller UID/version and canonical
+mapping, DRAINING, zero allocations and zero durable assignments. A single
+joined ownership observation reads raw actor, live worker and claim protobufs
+without the public discard-unknown decoder. It refuses every dependent actor
+pointer, target-node local snapshot and unresolved relevant native operation.
+Corrupt, unknown, malformed or unlocated ownership is uncertainty, not empty.
+Unrelated external snapshots and legitimate history do not require deletion.
 
-## Wire outcomes
+Success returns the exact authoritative `worker` and an opaque
+`ownership_generation` token (`observed-v1:` plus SHA-256). Despite its legacy
+wire name, the token hashes actual observed worker/actor/claim records,
+including their identities and versions; it is **not** a durable generation,
+lease or node-wide fence. No database state, version, assignment, event or
+outbox record is changed by proof. A database/commit error returns no proof.
 
-* `INVALID_ARGUMENT`: malformed input, missing UID or nonpositive version.
-* `NOT_FOUND`: worker missing; ownership is unknown.
-* `ABORTED`: UID or version changed, including name reuse. Read again.
-* `FAILED_PRECONDITION`: native refusal. `google.rpc.ErrorInfo` carries domain
-  `ateapi.worker-ownership` and one of the following reasons:
+DRAINING excludes future binds on this worker through the same row lock.
+Successful pause retains the actor pointer through reservation release, then
+atomically publishes LocalSnapshot/node ownership and clears the pointer.
+Successful suspend/upload retains that ownership through external publication.
+A native mutation (Run/Restore, checkpoint/upload or Terminate) records `ActorStatus.pending_native_operation`
+**before dispatch**, including its operation and exact observed worker
+UID/version, Pod/node and assignment, or the local source for a paused upload
+(which has no live worker). Error, cancellation, crash and process restart
+retain this origin independently of scheduling reservations. A URI or pure
+workload statistics read never settles it. Successful lifecycle publication
+clears pending ownership atomically with its replacement snapshot state.
+
+The request digest also pins dispatch parameters. Successful Run/Restore
+settles into the live RUNNING pointer; successful Terminate settles only its
+own dispatch, with the actor pointer retained through release. A failed
+Terminate or NotFound is not absence of queued work.
+
+Delete and revert refuse unresolved native ownership, including legacy
+in-progress identifiers without provenance. They cannot erase the record or
+delete external objects while an uncertain writer could still produce effects.
+Legacy native-error crash envelopes without dispatch origin also refuse.
+No automatic settlement or crash-resume path is invented. Ordinary Resume
+rejects CRASHED; settled crashes still support existing revert/recovery.
+
+Resume legitimately leaves LocalSnapshot populated. Treating it as historical
+requires a complete RUNNING assignment, its durable actor-UID claim, matching
+authoritative live worker/Pod/node and allocation, an assignment on a recorded
+snapshot-owning node, and no pending snapshot operation. Snapshot validation
+still runs. Missing/malformed pointers or claims remain unknown. The live
+assignment continues to block its node; RUNNING alone is never disposal proof.
+
+## Consumer prerequisites before activation
+
+This proves the exact **worker's** retirement, not unconditional authority to
+delete its containing node. Another worker can become active on that node and
+must independently retain protection before it becomes eligible for work.
+Creation/registration protection must cover both new and pre-existing workers;
+an asynchronous later annotation alone is insufficient. ACTIVE, busy, unknown
+and unproved workers must remain protected. Node deletion must also account
+for terminal protected Pods and local data, PVs and ordinary Pod/PDB checks.
+A terminal Pod annotation alone does not establish node retention.
+
+Goat must enforce those creation and node-safety boundaries, wire the native
+producer into EmptyDrainAuthority, and preserve durable intent, owner warm
+capacity and pending-demand checks. The sequence remains: drain, exact
+DRAINING readback, final proof, full cooldown, identity recheck, optimistic
+release of only the proven Pod's protection. No blanket pre-drain proof is
+required. A new worker has independent protection and its own release proof.
+Worker/Pod replacement invalidates old intent/evidence; node-name-only local
+ownership conservatively blocks the current containing node and grants no
+positive authority over a reused node name.
+
+Lost drain ACK: fresh exact-incarnation DRAINING readback recovers drain state.
+Lost proof ACK, errors, restart or unavailable reads: preserve protection,
+re-read identities and obtain a new complete proof. DRAINING readback alone
+is never ownership evidence. Any absent/partial/mismatched success envelope,
+empty token, unknown response field or UNIMPLEMENTED is refusal. Consumers
+must not substitute list counts or GetActiveWorkloadStats.
+
+## Wire refusals
+
+* `INVALID_ARGUMENT`: malformed request, missing UID/nonpositive version.
+* `NOT_FOUND`: missing worker; ownership unknown.
+* `ABORTED`: UID/version changed, including name reuse; read again.
+* `FAILED_PRECONDITION`: native refusal. `google.rpc.ErrorInfo` has domain
+  `ateapi.worker-ownership` and a reason below.
 
 | Reason | Missing or conflicting fact |
 | --- | --- |
 | `OWNERSHIP_NOT_DRAINING` | Expected/current worker is not DRAINING |
-| `OWNERSHIP_MAPPING_CHANGED` | Canonical Pod/node mapping differs or a current target actor pointer contradicts it |
-| `OWNERSHIP_BUSY` | Allocation, assignment or relevant actor pointer remains |
+| `OWNERSHIP_MAPPING_CHANGED` | Canonical Pod/node mapping differs |
+| `OWNERSHIP_BUSY` | Allocation, assignment or dependent actor pointer remains |
 | `OWNERSHIP_LOCAL_CHECKPOINT` | A current checkpoint requires the containing node |
-| `OWNERSHIP_OPERATION_PENDING` | Relevant recorded upload/checkpoint work remains |
-| `OWNERSHIP_UNKNOWN` | Partial, unknown, corrupt or unlocated ownership data |
-| `OWNERSHIP_STABILITY_UNPROVEN` | Current observations cannot establish stability through ordinary release |
+| `OWNERSHIP_OPERATION_PENDING` | Relevant unresolved native work remains |
+| `OWNERSHIP_UNKNOWN` | Partial, unknown, corrupt or unlocated ownership |
+| `OWNERSHIP_STABILITY_UNPROVEN` | Reserved refusal from older producer versions |
 
-All errors return no proof response. Transport errors, missing details, unknown
-reasons and UNIMPLEMENTED also mean no evidence. Consumers must preserve
-protection and must never fall back to DrainWorker, DrainEmptyWorker, list
-counts or GetActiveWorkloadStats.
+Every error returns no proof response. Unknown reasons also retain protection.
 
-The response schema reserves `worker` and `ownership_generation` for a future
-supported success path. Consumers must require a nonempty native ownership
-generation and complete exact identity/mapping before treating any future
-success as evidence. No generation is minted by this implementation. A lost
-response is not permission to release: fresh identity readback and a new proof
-attempt are required. GetWorker DRAINING readback alone recovers drain state,
-not ownership proof.
-
-## Why the final refusal is necessary
-
-`DrainEmptyWorker` excludes assignment to this worker, but sibling workers can
-publish new local state on the containing node after a proof transaction
-commits. Actor updates publish checkpoint ownership without the target worker
-row lock. Workflow leases lack node dependency provenance after an actor pointer
-is cleared. Ordinary Pod cleanup deletes the Worker row, so a worker-row-only
-fence would disappear before ordinary node retirement. The source interleaving
-and native counterexample tests are recorded in
-[worker-retirement-evidence-gap.md](worker-retirement-evidence-gap.md).
-
-Later constraint-conflict steering prohibits new durable schema/fences in this
-task. No migration, lease tombstone, retained deleted Worker, controller or
-attestation infrastructure is introduced. This refusal path is partial delivery
-of the original producer objective, not live cleanup or the complete positive
-proof. Root retains review/publication/CI/Kargo deployment, capability rollout,
-Goat integration and deployed acceptance. The default-off live guard is unchanged.
+Native implementation/test source is not deployed acceptance. Mission Control
+owns publication and subsequent review, CI, Kargo deployment, Goat integration
+and deployed acceptance. The default-off live guard is unchanged. See the
+[remaining integration/evidence boundary](worker-retirement-evidence-gap.md).
