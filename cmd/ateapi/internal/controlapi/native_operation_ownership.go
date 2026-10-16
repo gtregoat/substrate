@@ -129,7 +129,8 @@ func acknowledgedNativeTermination(actor *ateapipb.Actor) bool {
 	digest, err := hex.DecodeString(op.GetRequestDigest())
 	return err == nil && len(digest) == sha256.Size && op.GetLocalSource() == nil &&
 		op.GetLocalSnapshotName() == s.GetInProgressLocalSnapshotName() && op.GetSnapshotUri() == s.GetInProgressSnapshotUri() &&
-		op.GetSourceWorker().GetMetadata().GetUid() != "" &&
+		op.GetSourceWorker().GetMetadata().GetUid() != "" && op.GetSourceWorker().GetMetadata().GetVersion() > 0 &&
+		op.GetSourceWorker().GetMetadata().GetName() != "" && op.GetSourceWorker().GetWorkerPodUid() != "" && op.GetSourceWorker().GetNodeName() != "" &&
 		op.GetAssignment() != nil && proto.Equal(op.GetAssignment(), workerAssignmentFrom(op.GetSourceWorker())) &&
 		(s.GetWorkerAssignment() == nil || proto.Equal(s.GetWorkerAssignment(), op.GetAssignment()))
 }

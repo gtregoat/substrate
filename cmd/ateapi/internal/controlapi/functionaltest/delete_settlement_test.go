@@ -72,14 +72,14 @@ func (s *terminationSettlementStore) UpdateActor(ctx context.Context, ref resour
 	})
 	if settlement {
 		s.mu.Lock()
-		if mode == "read" {
+		if mode == "read" || mode == "fresh-read" || mode == "committed-read" {
 			s.failRead = true
 		}
 		if mode == "cas" {
 			s.mode = ""
 		}
 		s.mu.Unlock()
-		if mode == "lost-settlement-ack" && err == nil {
+		if (mode == "lost-settlement-ack" || mode == "committed-read") && err == nil {
 			return nil, errors.New("committed settlement response lost")
 		}
 	}
@@ -87,7 +87,7 @@ func (s *terminationSettlementStore) UpdateActor(ctx context.Context, ref resour
 }
 
 func TestDeleteActor_TerminationSettlementBoundary(t *testing.T) {
-	for _, mode := range []string{"lost-native-ack", "timeout", "write", "read", "success", "cas", "lost-settlement-ack", "cleanup"} {
+	for _, mode := range []string{"lost-native-ack", "timeout", "write", "read", "success", "cas", "lost-settlement-ack", "fresh-read", "committed-read", "cleanup"} {
 		t.Run(mode, func(t *testing.T) {
 			plugin := &detachFailVolumePlugin{}
 			fault := &terminationSettlementStore{}
@@ -145,7 +145,7 @@ func TestDeleteActor_TerminationSettlementBoundary(t *testing.T) {
 			fault.mu.Unlock()
 			_, err = tc.client.DeleteActor(ctx, &ateapipb.DeleteActorRequest{Actor: ref, AnyState: true})
 			unknown := mode == "lost-native-ack" || mode == "timeout" || mode == "write" || mode == "read"
-			if unknown || mode == "cleanup" {
+			if unknown || mode == "cleanup" || mode == "fresh-read" || mode == "committed-read" {
 				if err == nil {
 					t.Fatal("uncertain/failed cleanup reported success")
 				}
@@ -155,7 +155,7 @@ func TestDeleteActor_TerminationSettlementBoundary(t *testing.T) {
 				}
 				op := after.GetStatus().GetPendingNativeOperation()
 				wantOp := "terminate"
-				if mode == "cleanup" {
+				if !unknown {
 					wantOp = "terminate-acknowledged"
 				}
 				if op.GetOperation() != wantOp || len(op.GetRequestDigest()) != 64 || !proto.Equal(op.GetAssignment(), before.GetStatus().GetWorkerAssignment()) || op.GetSourceWorker().GetMetadata().GetUid() != worker.GetMetadata().GetUid() {
@@ -174,7 +174,7 @@ func TestDeleteActor_TerminationSettlementBoundary(t *testing.T) {
 				plugin.mu.Lock()
 				detaches, deletes := plugin.detachAttempts, len(plugin.deleted)
 				plugin.mu.Unlock()
-				if deletes != 0 || (unknown && detaches != 0) || len(tc.objectStore.Snapshot(t, uri)) != len(objects) {
+				if deletes != 0 || ((unknown || mode == "fresh-read" || mode == "committed-read") && detaches != 0) || len(tc.objectStore.Snapshot(t, uri)) != len(objects) {
 					t.Fatal("destructive cleanup escaped the termination/settlement barrier")
 				}
 				if unknown {
