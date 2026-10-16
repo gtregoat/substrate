@@ -409,11 +409,23 @@ func TestQualifiedRunningAssignment(t *testing.T) {
 	if qualifiedRunningAssignment(actor, nil, claim) || qualifiedRunningAssignment(actor, live, nil) {
 		t.Fatal("missing live worker or durable claim qualified")
 	}
-	// Even qualified historical metadata leaves the current node dependency.
+	// The live assignment still blocks retirement of its own worker.
 	err := actorRetirementDependency(actor, live, live, claim)
 	requireOwnershipRefusal(t, nil, err, store.OwnershipBusy)
 	other := proto.CloneOf(live)
 	other.Metadata.Name = "other-worker"
+	other.Metadata.Uid = "55555555-5555-4555-8555-555555555555"
+	other.WorkerPod = "sibling-pod"
+	other.WorkerPodUid = "66666666-6666-4666-8666-666666666666"
+	if err := actorRetirementDependency(actor, other, live, claim); err != nil {
+		t.Fatalf("qualified sibling on the same node blocked worker retirement: %v", err)
+	}
+	for _, badClaim := range []*ateapipb.ActorAssignment{nil, {ActorUid: "wrong-actor"}} {
+		requireOwnershipRefusal(t, nil, actorRetirementDependency(actor, other, live, badClaim), store.OwnershipUnknown)
+	}
+	alias := proto.CloneOf(other)
+	alias.WorkerPodUid = live.GetWorkerPodUid()
+	requireOwnershipRefusal(t, nil, actorRetirementDependency(actor, alias, live, claim), store.OwnershipMappingChanged)
 	other.NodeName = "other-node"
 	if err := actorRetirementDependency(actor, other, live, claim); err != nil {
 		t.Fatalf("independent node acquired a dependency on historical metadata: %v", err)
@@ -515,4 +527,112 @@ func TestNativeOperationDependency(t *testing.T) {
 	legacy.Status.PendingNativeOperation = nil
 	legacy.Status.LocalSnapshot = &ateapipb.LocalSnapshot{SnapshotName: "old-history", NodeVmsWithLocalSnapshots: []string{"unrelated-history-node"}}
 	requireOwnershipRefusal(t, nil, actorRetirementDependency(legacy, unrelated, nil, nil), store.OwnershipUnknown)
+}
+
+// These are policy fixtures through the real joined SQL proof boundary. The
+// production Pause->Resume lifecycle positive is also exercised in TestPauseActor.
+func TestProveEmptyDraining_QualifiedSibling(t *testing.T) {
+	for _, scenario := range []string{"running", "historical-snapshot", "missing-claim", "malformed-claim", "malformed-pointer", "target-worker", "pending-operation", "node-local-snapshot"} {
+		t.Run(scenario, func(t *testing.T) {
+			p := setupPostgresPersistence(t)
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			createTestAtespace(t, p, "sibling-team")
+			candidate, err := p.CreateWorker(ctx, ownershipTestWorker())
+			if err != nil {
+				t.Fatal(err)
+			}
+			candidate, err = p.DrainEmptyWorker(ctx, candidate.GetMetadata().GetName(), store.PreconditionFrom(candidate))
+			if err != nil {
+				t.Fatal(err)
+			}
+			siblingInput := ownershipTestWorker()
+			siblingInput.Metadata.Name = "live-sibling"
+			siblingInput.WorkerPod = "live-sibling-pod"
+			siblingInput.WorkerPodUid = "22222222-2222-4222-8222-222222222222"
+			siblingInput.Ip = "10.0.0.2"
+			sibling, err := p.CreateWorker(ctx, siblingInput)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pointer := func(w *ateapipb.Worker) *ateapipb.WorkerAssignment {
+				return &ateapipb.WorkerAssignment{Worker: &ateapipb.ObjectRef{Name: w.GetMetadata().GetName()}, WorkerNamespace: w.GetWorkerNamespace(), WorkerPool: w.GetWorkerPool(), WorkerPod: w.GetWorkerPod(), WorkerPodUid: w.GetWorkerPodUid(), WorkerPodIp: w.GetIp(), NodeName: w.GetNodeName()}
+			}
+			actor, err := p.CreateActor(ctx, &ateapipb.Actor{Metadata: &ateapipb.ResourceMetadata{Atespace: "sibling-team", Name: "running"}, Status: &ateapipb.ActorStatus{State: ateapipb.ActorState_ACTOR_STATE_RUNNING, WorkerAssignment: pointer(sibling)}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			claim := &ateapipb.ActorAssignment{Actor: &ateapipb.ObjectRef{Atespace: actor.GetMetadata().GetAtespace(), Name: actor.GetMetadata().GetName()}, ActorUid: actor.GetMetadata().GetUid()}
+			if err := p.BindActorToWorker(ctx, sibling.GetMetadata().GetName(), claim, func(w *ateapipb.Worker) error {
+				if w.GetStatus().GetState() != ateapipb.WorkerState_WORKER_STATE_ACTIVE {
+					return store.ErrFailedPrecondition
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			sibling, err = p.GetWorker(ctx, sibling.GetMetadata().GetName())
+			if err != nil {
+				t.Fatal(err)
+			}
+			reason := ""
+			switch scenario {
+			case "missing-claim":
+				// Deliberate corrupt/inconsistent observation, never a production
+				// lifecycle positive or evidence that ownership was settled.
+				if _, err := p.pool.Exec(ctx, `DELETE FROM worker_assignments WHERE actor_uid = $1`, actor.GetMetadata().GetUid()); err != nil {
+					t.Fatal(err)
+				}
+				reason = store.OwnershipUnknown
+			case "malformed-claim":
+				bad := proto.CloneOf(claim)
+				bad.ActorUid = "33333333-3333-4333-8333-333333333333"
+				data, err := proto.Marshal(bad)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := p.pool.Exec(ctx, `UPDATE worker_assignments SET proto = $1 WHERE actor_uid = $2`, data, actor.GetMetadata().GetUid()); err != nil {
+					t.Fatal(err)
+				}
+				reason = store.OwnershipUnknown
+			}
+			_, err = p.UpdateActor(ctx, resources.ActorRefFromActor(actor), store.PreconditionFrom(actor), func(a *ateapipb.Actor) error {
+				switch scenario {
+				case "historical-snapshot":
+					a.Status.LocalSnapshot = &ateapipb.LocalSnapshot{SnapshotName: "retained", NodeVmsWithLocalSnapshots: []string{candidate.GetNodeName()}}
+				case "malformed-pointer":
+					a.Status.WorkerAssignment.WorkerPodUid = ""
+					reason = store.OwnershipUnknown
+				case "target-worker":
+					a.Status.State = ateapipb.ActorState_ACTOR_STATE_RESUMING
+					a.Status.WorkerAssignment = pointer(candidate)
+					reason = store.OwnershipBusy
+				case "pending-operation":
+					a.Status.State = ateapipb.ActorState_ACTOR_STATE_PAUSING
+					a.Status.InProgressLocalSnapshotName = "pending"
+					a.Status.PendingNativeOperation = &ateapipb.NativeOperationOwnership{SourceWorker: sibling, Assignment: pointer(sibling), Operation: "checkpoint-local", LocalSnapshotName: "pending", RequestDigest: strings.Repeat("a", 64)}
+					reason = store.OwnershipOperationPending
+				case "node-local-snapshot":
+					a.Status.State = ateapipb.ActorState_ACTOR_STATE_PAUSED
+					a.Status.WorkerAssignment = nil
+					a.Status.LocalSnapshot = &ateapipb.LocalSnapshot{SnapshotName: "local", NodeVmsWithLocalSnapshots: []string{candidate.GetNodeName()}}
+					reason = store.OwnershipLocalCheckpoint
+				}
+				return nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			proof, err := p.ProveEmptyDraining(ctx, candidate)
+			if reason == "" {
+				requireOwnershipProof(t, proof, err, candidate)
+			} else {
+				requireOwnershipRefusal(t, proof, err, reason)
+			}
+			after, err := p.GetWorker(ctx, candidate.GetMetadata().GetName())
+			if err != nil || !proto.Equal(candidate, after) {
+				t.Fatalf("proof changed candidate: worker=%v err=%v", after, err)
+			}
+		})
+	}
 }
