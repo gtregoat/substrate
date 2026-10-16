@@ -34,6 +34,7 @@ import (
 	"sync"
 
 	"github.com/agent-substrate/substrate/cmd/atelet/internal/ategcs"
+	"github.com/agent-substrate/substrate/cmd/atelet/internal/operationjournal"
 	"github.com/agent-substrate/substrate/cmd/atelet/internal/sparsefile"
 	"github.com/agent-substrate/substrate/internal/actorlog"
 	"github.com/agent-substrate/substrate/internal/ateapiauth"
@@ -435,6 +436,7 @@ func drainOnShutdown(ctx context.Context, srv *grpc.Server, readiness *serverboo
 type AteomHerder struct {
 	ateletpb.UnimplementedAteomHerderServer
 
+	operationJournal      *operationjournal.Journal
 	ateomDialer           *AteomDialer
 	imageCache            *imagecache.Store
 	anonGCSClient         ategcs.ObjectStorage
@@ -461,6 +463,7 @@ func NewService(
 	systemInfoVolumes *systemInfoVolumeRefresher,
 ) *AteomHerder {
 	wms := &AteomHerder{
+		operationJournal:      &operationjournal.Journal{Root: filepath.Join(ateompath.BasePath, "operation-receipts"), Limit: 65536},
 		ateomDialer:           ateomDialer,
 		imageCache:            imageCache,
 		anonGCSClient:         anonGCSClient,

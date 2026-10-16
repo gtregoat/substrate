@@ -16,7 +16,7 @@
 // versions:
 // - protoc-gen-go-grpc v1.6.2
 // - protoc             v4.25.3
-// source: atelet.proto
+// source: internal/proto/ateletpb/atelet.proto
 
 package ateletpb
 
@@ -247,10 +247,12 @@ var AteomSupport_ServiceDesc = grpc.ServiceDesc{
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
-	Metadata: "atelet.proto",
+	Metadata: "internal/proto/ateletpb/atelet.proto",
 }
 
 const (
+	AteomHerder_ExecuteOperation_FullMethodName       = "/atelet.AteomHerder/ExecuteOperation"
+	AteomHerder_GetOperation_FullMethodName           = "/atelet.AteomHerder/GetOperation"
 	AteomHerder_Run_FullMethodName                    = "/atelet.AteomHerder/Run"
 	AteomHerder_Checkpoint_FullMethodName             = "/atelet.AteomHerder/Checkpoint"
 	AteomHerder_Restore_FullMethodName                = "/atelet.AteomHerder/Restore"
@@ -267,6 +269,10 @@ const (
 // Called by ate-api-server over cluster networking.  ate-api-server
 // authenticates with its k8s pod identity mTLS certificate.
 type AteomHerderClient interface {
+	// Execute an exactly identified operation. Legacy methods remain unchanged.
+	ExecuteOperation(ctx context.Context, in *ExecuteOperationRequest, opts ...grpc.CallOption) (*OperationResult, error)
+	// Lookup never dispatches or infers success from missing local data.
+	GetOperation(ctx context.Context, in *GetOperationRequest, opts ...grpc.CallOption) (*OperationResult, error)
 	// Run tells atelet to create a new containerized workload from scratch on an
 	// ateom.
 	Run(ctx context.Context, in *RunRequest, opts ...grpc.CallOption) (*RunResponse, error)
@@ -292,6 +298,26 @@ type ateomHerderClient struct {
 
 func NewAteomHerderClient(cc grpc.ClientConnInterface) AteomHerderClient {
 	return &ateomHerderClient{cc}
+}
+
+func (c *ateomHerderClient) ExecuteOperation(ctx context.Context, in *ExecuteOperationRequest, opts ...grpc.CallOption) (*OperationResult, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(OperationResult)
+	err := c.cc.Invoke(ctx, AteomHerder_ExecuteOperation_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *ateomHerderClient) GetOperation(ctx context.Context, in *GetOperationRequest, opts ...grpc.CallOption) (*OperationResult, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(OperationResult)
+	err := c.cc.Invoke(ctx, AteomHerder_GetOperation_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func (c *ateomHerderClient) Run(ctx context.Context, in *RunRequest, opts ...grpc.CallOption) (*RunResponse, error) {
@@ -353,6 +379,10 @@ func (c *ateomHerderClient) Terminate(ctx context.Context, in *TerminateRequest,
 // Called by ate-api-server over cluster networking.  ate-api-server
 // authenticates with its k8s pod identity mTLS certificate.
 type AteomHerderServer interface {
+	// Execute an exactly identified operation. Legacy methods remain unchanged.
+	ExecuteOperation(context.Context, *ExecuteOperationRequest) (*OperationResult, error)
+	// Lookup never dispatches or infers success from missing local data.
+	GetOperation(context.Context, *GetOperationRequest) (*OperationResult, error)
 	// Run tells atelet to create a new containerized workload from scratch on an
 	// ateom.
 	Run(context.Context, *RunRequest) (*RunResponse, error)
@@ -380,6 +410,12 @@ type AteomHerderServer interface {
 // pointer dereference when methods are called.
 type UnimplementedAteomHerderServer struct{}
 
+func (UnimplementedAteomHerderServer) ExecuteOperation(context.Context, *ExecuteOperationRequest) (*OperationResult, error) {
+	return nil, status.Error(codes.Unimplemented, "method ExecuteOperation not implemented")
+}
+func (UnimplementedAteomHerderServer) GetOperation(context.Context, *GetOperationRequest) (*OperationResult, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetOperation not implemented")
+}
 func (UnimplementedAteomHerderServer) Run(context.Context, *RunRequest) (*RunResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Run not implemented")
 }
@@ -414,6 +450,42 @@ func RegisterAteomHerderServer(s grpc.ServiceRegistrar, srv AteomHerderServer) {
 		t.testEmbeddedByValue()
 	}
 	s.RegisterService(&AteomHerder_ServiceDesc, srv)
+}
+
+func _AteomHerder_ExecuteOperation_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ExecuteOperationRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AteomHerderServer).ExecuteOperation(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AteomHerder_ExecuteOperation_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AteomHerderServer).ExecuteOperation(ctx, req.(*ExecuteOperationRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AteomHerder_GetOperation_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetOperationRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AteomHerderServer).GetOperation(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AteomHerder_GetOperation_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AteomHerderServer).GetOperation(ctx, req.(*GetOperationRequest))
+	}
+	return interceptor(ctx, in, info, handler)
 }
 
 func _AteomHerder_Run_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
@@ -514,6 +586,14 @@ var AteomHerder_ServiceDesc = grpc.ServiceDesc{
 	HandlerType: (*AteomHerderServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{
+			MethodName: "ExecuteOperation",
+			Handler:    _AteomHerder_ExecuteOperation_Handler,
+		},
+		{
+			MethodName: "GetOperation",
+			Handler:    _AteomHerder_GetOperation_Handler,
+		},
+		{
 			MethodName: "Run",
 			Handler:    _AteomHerder_Run_Handler,
 		},
@@ -535,5 +615,5 @@ var AteomHerder_ServiceDesc = grpc.ServiceDesc{
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
-	Metadata: "atelet.proto",
+	Metadata: "internal/proto/ateletpb/atelet.proto",
 }
