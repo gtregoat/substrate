@@ -74,6 +74,10 @@ func (w *ActorWorkflow) RevertActor(ctx context.Context, actorRef resources.Acto
 		return nil, err
 	}
 
+	if err := requireSettledNativeSnapshot(actor); err != nil {
+		return nil, err
+	}
+
 	var marked *ateapipb.Actor
 	if marked, err = w.ensureMarkedReverting(leaseCtx, actorRef, actor); err != nil {
 		return nil, err
@@ -248,6 +252,10 @@ func (w *ActorWorkflow) ensureRevertedFinalized(ctx context.Context, actorRef re
 	}
 	if got := latestActor.GetStatus().GetState(); got != ateapipb.ActorState_ACTOR_STATE_REVERTING {
 		return nil, status.Errorf(codes.FailedPrecondition, "FinalizeReverted prerequisite not met for Actor: %s (got: %v, want %s)", actorRef, got, ateapipb.ActorState_ACTOR_STATE_REVERTING)
+	}
+
+	if err := requireSettledNativeSnapshot(latestActor); err != nil {
+		return nil, err
 	}
 
 	storedActor, err := w.store.UpdateActor(ctx, actorRef, store.PreconditionFrom(latestActor), func(toUpdate *ateapipb.Actor) error {

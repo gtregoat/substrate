@@ -50,6 +50,10 @@ func (w *ActorWorkflow) DeleteActor(ctx context.Context, actorRef resources.Acto
 		return nil, status.Error(codes.Aborted, "concurrent update conflict, please retry")
 	}
 
+	if err := requireSettledNativeSnapshot(actor); err != nil {
+		return nil, err
+	}
+
 	if actor, err = w.ensureMarkedDeleting(ctx, actorRef, actor, anyState); err != nil {
 		return nil, err
 	}

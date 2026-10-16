@@ -251,6 +251,10 @@ func (w *ActorWorkflow) ensureAteletSuspended(ctx context.Context, actorRef reso
 	}
 	wireSnapshotScope = ateattr.SnapshotScopeValue(req.Scope)
 
+	if actor, err = w.recordNativeSnapshotOrigin(ctx, actorRef, actor, "checkpoint-external"); err != nil {
+		return wireSnapshotScope, err
+	}
+
 	if _, err = client.Checkpoint(ctx, req); err != nil {
 		slog.LogAttrs(ctx, slog.LevelError, "Setting Actor to crashed due to error",
 			append(ateattr.ActorRefLogAttrs(actorRef), slog.Any("err", err))...)
@@ -304,6 +308,10 @@ func (w *ActorWorkflow) ensurePausedSnapshotUploaded(ctx context.Context, actorR
 		DesiredScope: actorSnapshotContentScopeToAtelet(commitSnapshotScope(actor.GetMetadata().GetAtespace(), actorTemplate)),
 	}
 	wireSnapshotScope = ateattr.SnapshotScopeValue(req.DesiredScope)
+
+	if actor, err = w.recordNativeSnapshotOrigin(ctx, actorRef, actor, "upload-local"); err != nil {
+		return wireSnapshotScope, err
+	}
 
 	if _, err = client.UploadPausedCheckpoint(ctx, req); err != nil {
 		slog.LogAttrs(ctx, slog.LevelError, "Setting Actor to crashed due to error",
@@ -391,6 +399,10 @@ func (w *ActorWorkflow) ensureSuspendedFinalized(ctx context.Context, actorRef r
 		}
 	}
 
+	if latestActor.GetStatus().GetState() != ateapipb.ActorState_ACTOR_STATE_SUSPENDING {
+		return nil, status.Error(codes.FailedPrecondition, "suspend publication requires SUSPENDING; unresolved origin retained")
+	}
+
 	// 2. Finalize the actor: record its new external snapshot and mark it SUSPENDED. This
 	// must run even with no worker assignment (nothing to free), or the actor
 	// would be left SUSPENDING forever with the workflow reporting success.
@@ -426,6 +438,7 @@ func (w *ActorWorkflow) ensureSuspendedFinalized(ctx context.Context, actorRef r
 		}
 		toUpdate.Status.WorkerAssignment = nil
 		toUpdate.Status.LocalSnapshot = nil
+		toUpdate.Status.PendingNativeSnapshot = nil
 		return nil
 	})
 	dUpdateActor = time.Since(t)

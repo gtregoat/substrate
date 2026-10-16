@@ -613,6 +613,35 @@ message ActorStatus {
   //
   // +k8s:optional
   ActorCrash crash = 9;
+
+  // Origin of a native snapshot RPC that may still have local effects.
+  // Written before dispatch and retained across crash/restart. This is not a
+  // scheduling reservation. Only successful lifecycle publication settles it.
+  // +k8s:optional
+  NativeSnapshotOperation pending_native_snapshot = 10;
+}
+
+// NativeSnapshotOperation preserves the exact origin of ambiguous native work.
+// Assignment-backed checkpoints record the observed worker incarnation and
+// assignment. Paused uploads have no live worker and record their local source.
+message NativeSnapshotOperation {
+  // +k8s:optional
+  Worker source_worker = 1;
+  // +k8s:optional
+  WorkerAssignment assignment = 2;
+  // +k8s:optional
+  LocalSnapshot local_source = 3;
+  // +k8s:required
+  // +k8s:enum=checkpoint-local
+  // +k8s:enum=checkpoint-external
+  // +k8s:enum=upload-local
+  string operation = 4;
+  // +k8s:optional
+  // +k8s:format=k8s-short-name
+  string local_snapshot_name = 5;
+  // +k8s:optional
+  // +k8s:maxLength=2048
+  string snapshot_uri = 6;
 }
 
 // ActorCrash describes the failure that moved an Actor to CRASHED.
@@ -2216,7 +2245,8 @@ message ProveEmptyDrainingRequest {
 message ProveEmptyDrainingResponse {
   // Exact authoritative worker. A partial/absent response is never evidence.
   Worker worker = 1;
-  // Required for release eligibility; names the stable native ownership
-  // generation. A server unable to establish it returns a typed refusal.
+  // Opaque digest of the exact observed worker and qualified ownership rows.
+  // Despite the legacy field name, this is not a durable generation, lease,
+  // node-retirement fence, or unconditional authority to delete a node.
   string ownership_generation = 2;
 }
