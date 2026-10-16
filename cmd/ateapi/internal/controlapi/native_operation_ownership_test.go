@@ -77,8 +77,8 @@ func TestRecordNativeOperationOrigin_IdentityAndRetry(t *testing.T) {
 		t.Fatal("origin was not pinned to the actual worker/request")
 	}
 	repeated, err := workflow.recordNativeOperationOrigin(ctx, ref, recorded, "checkpoint-local", request)
-	if err != nil || !proto.Equal(repeated, recorded) {
-		t.Fatalf("same operation retry changed origin/version: %v %v", repeated, err)
+	if status.Code(err) != codes.FailedPrecondition || repeated != nil {
+		t.Fatalf("same digest authorized unknown operation replay: %v %v", repeated, err)
 	}
 	changed := proto.CloneOf(request)
 	changed.Scope = ateletpb.SnapshotScope_SNAPSHOT_SCOPE_DATA

@@ -96,7 +96,7 @@ func (w *ActorWorkflow) recordNativeOperationOrigin(ctx context.Context, ref res
 		if !proto.Equal(existing, origin) {
 			return nil, status.Error(codes.FailedPrecondition, "unsettled native operation origin changed")
 		}
-		return actor, nil
+		return nil, status.Error(codes.FailedPrecondition, "native operation was already dispatched; exact completion is unresolved")
 	}
 	return w.store.UpdateActor(ctx, ref, store.PreconditionFrom(actor), func(a *ateapipb.Actor) error {
 		a.Status.PendingNativeOperation = origin

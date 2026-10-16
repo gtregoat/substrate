@@ -194,3 +194,65 @@ PG/race/lifecycle acceptance, generated-code/format verification and rendered
 configuration checks remain outstanding if tools are unavailable. Unknown
 native completion remains durably held; exact-operation remote reconciliation
 is still the explicit retained protocol gap, not a fabricated successful recovery.
+
+## Current continuation: exact-operation capability gap
+
+The following is the current boundary; the earlier investigation's permanently
+refusing proof/fence discussion remains historical. Positive proof exists, but
+complete remote operation recovery does not.
+
+`internal/proto/ateletpb/atelet.proto` exposes Run, Restore, Checkpoint,
+UploadPausedCheckpoint and Terminate without a caller operation token or result
+lookup. Their responses are empty. Actor UID and target ateom UID identify the
+workload/incarnation, not an invocation: an actor can pause/resume repeatedly on
+the same Pod. Snapshot names and destination URIs identify outputs but do not
+prove all cleanup has settled. In `cmd/atelet/main.go`, Checkpoint performs local
+and external phases; UploadPausedCheckpoint uploads then prunes local files;
+Terminate reads sandbox assets before termination, unmount and directory removal.
+A missing sandbox or a present remote snapshot is not an exact completion receipt.
+GetActiveWorkloadStats supplies neither a lifecycle fence nor operation identity.
+There is no existing authoritative query this producer can call to settle these
+operations after a process interruption or lost native response.
+
+The producer now refuses redispatch even when the persisted request digest
+matches. In particular Resume checks pending ownership before volume attachment;
+checkpoint/upload dispatch also refuses an existing origin. This prevents a
+restart from replaying remote effects or clearing the first dispatch origin.
+A positive Terminate ACK still uses the existing bounded same-operation CAS
+reconciliation and survives later cleanup failures. DeleteActor's same-call
+settlement barrier is retained. Unknown completion remains protected and is an
+explicit liveness gap, never a success or evidence of absence.
+
+The smallest compatible native extension is additive: a caller-generated
+operation ID persisted with the actor's request digest and exact source
+incarnation, carried on each lifecycle request, and an authenticated result
+lookup keyed by actor UID, target incarnation, operation ID and request digest.
+Native dispatch must durably record acceptance before effects, reject token
+reuse with a different request, serialize effects with lifecycle work, and retain
+a terminal receipt independently of sandbox/local-checkpoint deletion. Lookup
+must distinguish unknown/in-flight from terminal success with its result and
+settled local-data disposition; NotFound cannot imply success. Capability absence
+on older servers must retain ownership with no fallback. Producer reconciliation
+would validate the exact receipt, CAS the matching actor operation, and resume
+only the corresponding publication/cleanup. A producer-only digest or timeout
+cannot implement this native durability contract. That extension and its real
+native restart acceptance are unimplemented, rather than represented by a fake
+receipt or a permanently refusing path labeled complete.
+
+Consumer retention correction source is now reported at Goat
+`3800b186e7913a9a886b585da9261cdebfcd2602` (`agent/mc-8f1bc30d`): root reports
+production RequireAuthority and nonrace retention regressions. This is unmerged,
+undeployed cross-job evidence, not this sandbox's test result. The producer's
+GET/row lock cannot prevent an old sampled-count remover from stripping Pod
+metadata. Deploy and verify that retention correction before enabling producer
+enforcement or drain; retain all creation and terminal/local-data prerequisites
+and the safe rollout sequence in the API contract.
+
+This continuation adds gated production RPC/PG lifecycle source coverage in
+`functionaltest/protected_lifecycle_test.go`, plus a pending-run publication
+failure regression. External native work alone is faked. It requires the real
+PG fixture and envtest; compilation alone and skipped tests do not prove it.
+There is no `tests/integration/` directory in this repository. Functionaltest,
+workersync/controller and affected store checks remain the relevant integration
+checks. Mandatory commands, actual exits, base comparisons and remaining gaps
+are recorded in the executor report for the final pushed source.

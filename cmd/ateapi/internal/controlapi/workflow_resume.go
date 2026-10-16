@@ -110,6 +110,9 @@ func (w *ActorWorkflow) ResumeActor(ctx context.Context, actorRef resources.Acto
 	if wasRunning = actor.GetStatus().GetState() == ateapipb.ActorState_ACTOR_STATE_RUNNING; wasRunning {
 		return actor, false, nil
 	}
+	if actor.GetStatus().GetPendingNativeOperation() != nil {
+		return nil, false, status.Error(codes.FailedPrecondition, "native resume completion is unresolved; retain operation ownership")
+	}
 	var created *ateapipb.Actor
 	if created, err = w.ensureVolumesCreated(leaseCtx, actorRef, actor, actorTemplate); err != nil {
 		return nil, false, err
