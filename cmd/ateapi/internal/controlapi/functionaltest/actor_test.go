@@ -3674,6 +3674,53 @@ func TestPauseActor(t *testing.T) {
 	if getResp.GetStatus().GetLocalSnapshot().GetSnapshotName() == "" {
 		t.Error("LocalSnapshot.SnapshotName is empty, want the name the pause checkpointed under")
 	}
+
+	// Exercise the production resume workflow: a successful resume retains the
+	// snapshot and binds on an owning node. RUNNING alone is not ownership.
+	retained := proto.CloneOf(getResp.GetStatus().GetLocalSnapshot())
+	ref := &ateapipb.ObjectRef{Atespace: testAtespace, Name: name}
+	if _, err := tc.client.ResumeActor(context.Background(), &ateapipb.ResumeActorRequest{Actor: ref}); err != nil {
+		t.Fatalf("ResumeActor after Pause: %v", err)
+	}
+	running, err := tc.client.GetActor(context.Background(), &ateapipb.GetActorRequest{Actor: ref})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if running.GetStatus().GetState() != ateapipb.ActorState_ACTOR_STATE_RUNNING || !proto.Equal(retained, running.GetStatus().GetLocalSnapshot()) {
+		t.Fatalf("resume must reach RUNNING and preserve the historical snapshot: %v", running)
+	}
+	assignment := running.GetStatus().GetWorkerAssignment()
+	if assignment == nil || assignment.GetNodeName() != "node1" || assignment.GetWorkerPodUid() == "" {
+		t.Fatalf("resumed actor lacks its owning-node assignment: %v", assignment)
+	}
+	claim, err := tc.persistence.GetWorkerAssignment(context.Background(), assignment.GetWorker().GetName(), running.GetMetadata().GetUid())
+	if err != nil || claim.GetActorUid() != running.GetMetadata().GetUid() {
+		t.Fatalf("resumed actor lacks its durable claim: claim=%v err=%v", claim, err)
+	}
+	// A drained sibling on the same node must still encounter the live actor
+	// dependency. This checks producer refusal, not node deletion or release.
+	sibling, err := tc.persistence.CreateWorker(context.Background(), &ateapipb.Worker{
+		Metadata:        &ateapipb.ResourceMetadata{Name: "55555555-5555-4555-8555-555555555555"},
+		WorkerNamespace: ns,
+		WorkerPool:      "pool1",
+		WorkerPod:       "retirement-sibling",
+		WorkerPodUid:    "55555555-5555-4555-8555-555555555555",
+		NodeName:        "node1",
+		Ip:              "10.0.0.99",
+		Status:          &ateapipb.WorkerStatus{State: ateapipb.WorkerState_WORKER_STATE_ACTIVE},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sibling, err = tc.persistence.DrainEmptyWorker(context.Background(), sibling.GetMetadata().GetName(), store.PreconditionFrom(sibling))
+	if err != nil {
+		t.Fatal(err)
+	}
+	proof, err := tc.persistence.ProveEmptyDraining(context.Background(), sibling)
+	var refusal *store.OwnershipRefusal
+	if proof != nil || !errors.As(err, &refusal) || refusal.Reason != store.OwnershipBusy {
+		t.Fatalf("live owning-node assignment must block sibling proof: proof=%v err=%v", proof, err)
+	}
 }
 
 // TestResumeActor_PausedLocalSnapshotMissing_Crashes tests that if the local checkpoint

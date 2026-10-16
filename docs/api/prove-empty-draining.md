@@ -7,12 +7,13 @@ UID, positive version, namespace, pool, Pod name, Pod UID, node name, IP and
 sandbox class. It must observe DRAINING. Namespace overrides, partial identity,
 stale revisions and name reuse do not waive any precondition.
 
-The current implementation provides concrete native refusals, as authorized by
-the task's final steering. **It does not grant release eligibility.** In
+The current implementation provides concrete native refusals. **It does not grant release eligibility.** In
 particular, an actually empty worker with independently retained external data
 returns `OWNERSHIP_STABILITY_UNPROVEN`, rather than a success-shaped empty
 response. The real useful positive proof requested in the original objective
-remains blocked on an admitted supported stability/retention boundary.
+remains unimplemented. The authorized next correction must retain uncertain
+operation origin through crash and later lifecycle transitions before enabling
+the clean-worker success path; no additional owner authorization is needed.
 
 The store holds the same PostgreSQL worker row lock used by assignment and
 drain, checks SQL/protobuf identity consistency, DRAINING, exact mapping,
@@ -20,9 +21,15 @@ allocation, durable assignments, actor pointers and local checkpoints. It reads
 raw protobufs without the public read path's deliberate unknown-field discard.
 Corrupt/unknown data is uncertainty. No worker, actor, assignment, snapshot,
 volume, version or outbox row is changed. An unrelated external snapshot or
-historical actor alone is not a node-local dependency. RUNNING actors retain
-stale pause snapshot metadata; the current assignment, rather than that
-historical checkpoint, determines their active node dependency.
+historical actor alone is not a node-local dependency. Resume legitimately
+retains pause snapshot metadata. Treating it as historical requires a complete
+RUNNING assignment, its durable actor-UID claim, and a matching authoritative
+worker incarnation/Pod/node observation from the same SQL read. The assignment
+must still be on a recorded snapshot-owning node and have no pending snapshot
+operation. Missing/malformed pointers, missing claims and inconsistent mappings
+remain unknown; RUNNING alone never suppresses snapshot validation. The live
+assignment still blocks proof for its own node. This observation does not
+settle a failed native operation or establish node-retirement authority.
 
 ## Wire outcomes
 
