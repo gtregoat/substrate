@@ -115,3 +115,7 @@ func protectionUnknown(message protoreflect.Message) bool {
 	})
 	return unknown
 }
+
+func sameProtectionIncarnation(a, b *ateapipb.Worker) bool {
+	return a.GetMetadata().GetUid() == b.GetMetadata().GetUid() && a.GetMetadata().GetName() == b.GetMetadata().GetName() && a.GetWorkerNamespace() == b.GetWorkerNamespace() && a.GetWorkerPod() == b.GetWorkerPod() && a.GetWorkerPodUid() == b.GetWorkerPodUid() && a.GetWorkerPool() == b.GetWorkerPool() && a.GetNodeName() == b.GetNodeName() && a.GetIp() == b.GetIp()
+}

@@ -172,3 +172,25 @@ all remaining requested positive/race tests. The generated RPC and typed
 refusal store path can already be reviewed independently. Tool availability does not remove
 that implementation requirement. The added documentation is outside the
 original write list because it records this exact ownership-evidence blocker.
+
+## Exact-Pod allocation gate continuation
+
+The opt-in producer prerequisite is implemented in
+`cmd/ateapi/internal/controlapi/worker_protection.go`, the production Resume
+workflow, and the worker-row-locked `CheckWorkerAssignment` store operation.
+It uses existing read-only Kubernetes authority and requires no new protocol,
+RBAC or controller. The rollout contract is in `prove-empty-draining.md`.
+Workersync's registration readiness remains advisory; the API admission gate
+covers both fresh and already ACTIVE records before allocation or resume retry.
+
+The source adds real PG/service/workflow tests with fake external Kubernetes
+only, including migration of the same ACTIVE incarnation, reservation-preserving
+resume refusal/retry, sibling placement, and bind/drain exclusion. These are
+source coverage until actually executed. No Go/gofmt, gcc, Docker, make, unzip
+or Helm executable was found on this sandbox PATH at implementation time.
+All mandatory final commands and base comparisons must be reported as actually
+returned, without inheriting any earlier source's execution evidence. Complete
+PG/race/lifecycle acceptance, generated-code/format verification and rendered
+configuration checks remain outstanding if tools are unavailable. Unknown
+native completion remains durably held; exact-operation remote reconciliation
+is still the explicit retained protocol gap, not a fabricated successful recovery.

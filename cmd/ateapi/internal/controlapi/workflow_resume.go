@@ -531,6 +531,9 @@ func (w *ActorWorkflow) assignWorkerAttempt(ctx context.Context, actorRef resour
 	// answer holds until the bind commits, so nothing here needs a fresh read
 	// and two claims for the last place cannot both be admitted.
 	admit := func(fresh *ateapipb.Worker) error {
+		if w.workerProtection != nil && !sameProtectionIncarnation(fresh, assignedWorker) {
+			return status.Error(codes.FailedPrecondition, "selected worker incarnation changed before claim")
+		}
 		if err := w.workerProtection.verify(ctx, fresh); err != nil {
 			return err
 		}
