@@ -16,7 +16,7 @@
 // versions:
 // - protoc-gen-go-grpc v1.6.2
 // - protoc             v4.25.3
-// source: ateapi.proto
+// source: pkg/proto/ateapipb/ateapi.proto
 
 package ateapipb
 
@@ -1633,7 +1633,7 @@ var Control_ServiceDesc = grpc.ServiceDesc{
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
-	Metadata: "ateapi.proto",
+	Metadata: "pkg/proto/ateapipb/ateapi.proto",
 }
 
 const (
@@ -1881,5 +1881,5 @@ var WorkerService_ServiceDesc = grpc.ServiceDesc{
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
-	Metadata: "ateapi.proto",
+	Metadata: "pkg/proto/ateapipb/ateapi.proto",
 }
