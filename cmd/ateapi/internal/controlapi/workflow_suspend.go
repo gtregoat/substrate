@@ -251,7 +251,7 @@ func (w *ActorWorkflow) ensureAteletSuspended(ctx context.Context, actorRef reso
 	}
 	wireSnapshotScope = ateattr.SnapshotScopeValue(req.Scope)
 
-	if actor, err = w.recordNativeSnapshotOrigin(ctx, actorRef, actor, "checkpoint-external"); err != nil {
+	if actor, err = w.recordNativeOperationOrigin(ctx, actorRef, actor, "checkpoint-external"); err != nil {
 		return wireSnapshotScope, err
 	}
 
@@ -309,7 +309,7 @@ func (w *ActorWorkflow) ensurePausedSnapshotUploaded(ctx context.Context, actorR
 	}
 	wireSnapshotScope = ateattr.SnapshotScopeValue(req.DesiredScope)
 
-	if actor, err = w.recordNativeSnapshotOrigin(ctx, actorRef, actor, "upload-local"); err != nil {
+	if actor, err = w.recordNativeOperationOrigin(ctx, actorRef, actor, "upload-local"); err != nil {
 		return wireSnapshotScope, err
 	}
 
@@ -438,7 +438,7 @@ func (w *ActorWorkflow) ensureSuspendedFinalized(ctx context.Context, actorRef r
 		}
 		toUpdate.Status.WorkerAssignment = nil
 		toUpdate.Status.LocalSnapshot = nil
-		toUpdate.Status.PendingNativeSnapshot = nil
+		toUpdate.Status.PendingNativeOperation = nil
 		return nil
 	})
 	dUpdateActor = time.Since(t)

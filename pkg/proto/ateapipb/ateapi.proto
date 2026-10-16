@@ -614,17 +614,17 @@ message ActorStatus {
   // +k8s:optional
   ActorCrash crash = 9;
 
-  // Origin of a native snapshot RPC that may still have local effects.
+  // Origin of a native mutation RPC that may still have local effects.
   // Written before dispatch and retained across crash/restart. This is not a
   // scheduling reservation. Only successful lifecycle publication settles it.
   // +k8s:optional
-  NativeSnapshotOperation pending_native_snapshot = 10;
+  NativeOperationOwnership pending_native_operation = 10;
 }
 
-// NativeSnapshotOperation preserves the exact origin of ambiguous native work.
-// Assignment-backed checkpoints record the observed worker incarnation and
+// NativeOperationOwnership preserves the exact origin of ambiguous native work.
+// Assignment-backed mutations record the observed worker incarnation and
 // assignment. Paused uploads have no live worker and record their local source.
-message NativeSnapshotOperation {
+message NativeOperationOwnership {
   // +k8s:optional
   Worker source_worker = 1;
   // +k8s:optional
