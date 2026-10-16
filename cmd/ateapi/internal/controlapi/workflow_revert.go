@@ -74,6 +74,18 @@ func (w *ActorWorkflow) RevertActor(ctx context.Context, actorRef resources.Acto
 		return nil, err
 	}
 
+	if actor.GetStatus().GetPendingNativeOperation().GetOperation() == "terminate" {
+		if err = w.reconcileNative(leaseCtx, actor, "terminate"); err != nil {
+			return nil, err
+		}
+		if err = w.settleNativeTermination(leaseCtx, actorRef, actor); err != nil {
+			return nil, err
+		}
+		actor, err = w.store.GetActor(leaseCtx, actorRef)
+		if err != nil {
+			return nil, err
+		}
+	}
 	if err := requireSettledNativeOperation(actor); err != nil {
 		return nil, err
 	}

@@ -211,8 +211,8 @@ func TestWorkerProtection_ResumePublicationFailureDoesNotReplay(t *testing.T) {
 	if !called {
 		t.Fatal("fault occurred before native success")
 	}
-	if _, err := tc.client.ResumeActor(ctx, &ateapipb.ResumeActorRequest{Actor: ref}); status.Code(err) != codes.FailedPrecondition {
-		t.Fatalf("unknown completion retried: %v", err)
+	if _, err := tc.client.ResumeActor(ctx, &ateapipb.ResumeActorRequest{Actor: ref}); err != nil {
+		t.Fatalf("terminal receipt did not recover publication: %v", err)
 	}
 	tc.fakeAtelet.Lock.Lock()
 	replayed := tc.fakeAtelet.RunCalled
@@ -221,8 +221,8 @@ func TestWorkerProtection_ResumePublicationFailureDoesNotReplay(t *testing.T) {
 		t.Fatal("native Run replayed without a receipt")
 	}
 	after, err := tc.client.GetActor(ctx, &ateapipb.GetActorRequest{Actor: ref})
-	if err != nil || !proto.Equal(after, pending) {
-		t.Fatalf("retry discarded ownership: %v %v", after, err)
+	if err != nil || after.GetStatus().GetState() != ateapipb.ActorState_ACTOR_STATE_RUNNING || after.GetStatus().GetPendingNativeOperation() != nil {
+		t.Fatalf("receipt publication did not settle: %v %v", after, err)
 	}
 	worker, err := tc.client.GetWorker(ctx, &ateapipb.GetWorkerRequest{Worker: &ateapipb.ObjectRef{Name: workerName}})
 	if err != nil {

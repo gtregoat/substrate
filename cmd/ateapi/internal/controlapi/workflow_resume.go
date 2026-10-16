@@ -29,6 +29,7 @@ import (
 	"github.com/agent-substrate/substrate/pkg/proto/ateapipb"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -111,7 +112,14 @@ func (w *ActorWorkflow) ResumeActor(ctx context.Context, actorRef resources.Acto
 		return actor, false, nil
 	}
 	if actor.GetStatus().GetPendingNativeOperation() != nil {
-		return nil, false, status.Error(codes.FailedPrecondition, "native resume completion is unresolved; retain operation ownership")
+		if actor.GetStatus().GetState() != ateapipb.ActorState_ACTOR_STATE_RESUMING {
+			return nil, false, status.Error(codes.FailedPrecondition, "native resume lifecycle changed")
+		}
+		if err = w.reconcileNative(leaseCtx, actor, "run", "restore"); err != nil {
+			return nil, false, err
+		}
+		running, err := w.finalizeRunning(leaseCtx, actorRef)
+		return running, err == nil, err
 	}
 	var created *ateapipb.Actor
 	if created, err = w.ensureVolumesCreated(leaseCtx, actorRef, actor, actorTemplate); err != nil {
@@ -741,7 +749,10 @@ func (w *ActorWorkflow) ensureAteletRestored(ctx context.Context, actorRef resou
 		if actor, err = w.recordNativeOperationOrigin(ctx, actorRef, actor, "restore", req); err != nil {
 			return tele, err
 		}
-		if _, err = client.Restore(ctx, req); err != nil {
+		if err = w.invokeNative(ctx, client, actor, req); err != nil {
+			if len(actor.GetStatus().GetPendingNativeOperation().GetInvocation()) != 0 {
+				return tele, err
+			}
 			slog.LogAttrs(ctx, slog.LevelError, "Setting Actor to crashed due to error",
 				append(ateattr.ActorRefLogAttrs(actorRef), slog.Any("err", err))...)
 			if cerr := crashActor(ctx, w.store, actorRef, ateattr.OperationResume, ateletCrashMessage("Restore", err)); cerr != nil {
@@ -795,7 +806,10 @@ func (w *ActorWorkflow) ensureAteletRestored(ctx context.Context, actorRef resou
 		if actor, err = w.recordNativeOperationOrigin(ctx, actorRef, actor, "restore", req); err != nil {
 			return tele, err
 		}
-		if _, err = client.Restore(ctx, req); err != nil {
+		if err = w.invokeNative(ctx, client, actor, req); err != nil {
+			if len(actor.GetStatus().GetPendingNativeOperation().GetInvocation()) != 0 {
+				return tele, err
+			}
 			slog.LogAttrs(ctx, slog.LevelError, "Setting Actor to crashed due to error",
 				append(ateattr.ActorRefLogAttrs(actorRef), slog.Any("err", err))...)
 			if cerr := crashActor(ctx, w.store, actorRef, ateattr.OperationResume, ateletCrashMessage("Restore", err)); cerr != nil {
@@ -824,7 +838,10 @@ func (w *ActorWorkflow) ensureAteletRestored(ctx context.Context, actorRef resou
 		if actor, err = w.recordNativeOperationOrigin(ctx, actorRef, actor, "run", req); err != nil {
 			return tele, err
 		}
-		if _, err = client.Run(ctx, req); err != nil {
+		if err = w.invokeNative(ctx, client, actor, req); err != nil {
+			if len(actor.GetStatus().GetPendingNativeOperation().GetInvocation()) != 0 {
+				return tele, err
+			}
 			slog.LogAttrs(ctx, slog.LevelError, "Setting Actor to crashed due to error",
 				append(ateattr.ActorRefLogAttrs(actorRef), slog.Any("err", err))...)
 			if cerr := crashActor(ctx, w.store, actorRef, ateattr.OperationResume, ateletCrashMessage("Run", err)); cerr != nil {
@@ -852,7 +869,17 @@ func (w *ActorWorkflow) finalizeRunning(ctx context.Context, actorRef resources.
 	if err != nil {
 		return nil, err
 	}
+	if len(latestActor.GetStatus().GetPendingNativeOperation().GetInvocation()) != 0 {
+		if err = w.reconcileNative(ctx, latestActor, "run", "restore"); err != nil {
+			return nil, err
+		}
+	}
+	settledOrigin := proto.CloneOf(latestActor.GetStatus().GetPendingNativeOperation())
+	settledUID := latestActor.GetMetadata().GetUid()
 
+	if latestActor.GetMetadata().GetUid() != settledUID || !proto.Equal(settledOrigin, latestActor.GetStatus().GetPendingNativeOperation()) {
+		return nil, status.Error(codes.Aborted, "native publication identity changed")
+	}
 	if pending := latestActor.GetStatus().GetPendingNativeOperation(); pending != nil && pending.GetOperation() != "run" && pending.GetOperation() != "restore" {
 		return nil, status.Error(codes.FailedPrecondition, "resume cannot settle another native operation")
 	}

@@ -74,7 +74,11 @@ func (w *ActorWorkflow) PauseActor(ctx context.Context, actorRef resources.Actor
 		return nil, err
 	}
 	actor = marked
-	if wireSnapshotScope, err = w.ensureAteletPaused(leaseCtx, actorRef, actor, actorTemplate); err != nil {
+	if actor.GetStatus().GetPendingNativeOperation() != nil {
+		if err = w.reconcileNative(leaseCtx, actor, "checkpoint-local"); err != nil {
+			return nil, err
+		}
+	} else if wireSnapshotScope, err = w.ensureAteletPaused(leaseCtx, actorRef, actor, actorTemplate); err != nil {
 		return nil, err
 	}
 	// TODO: There is no difference between suspend and pause for now, but we
@@ -203,7 +207,10 @@ func (w *ActorWorkflow) ensureAteletPaused(ctx context.Context, actorRef resourc
 		return wireSnapshotScope, err
 	}
 
-	if _, err = client.Checkpoint(ctx, req); err != nil {
+	if err = w.invokeNative(ctx, client, actor, req); err != nil {
+		if len(actor.GetStatus().GetPendingNativeOperation().GetInvocation()) != 0 {
+			return wireSnapshotScope, err
+		}
 		slog.LogAttrs(ctx, slog.LevelError, "Setting Actor to crashed due to error",
 			append(ateattr.ActorRefLogAttrs(actorRef), slog.Any("err", err))...)
 		if cerr := crashActor(ctx, w.store, actorRef, ateattr.OperationPause, ateletCrashMessage("Checkpoint", err)); cerr != nil {
@@ -229,6 +236,13 @@ func (w *ActorWorkflow) ensurePausedFinalized(ctx context.Context, actorRef reso
 	if err != nil {
 		return nil, err
 	}
+	if len(latestActor.GetStatus().GetPendingNativeOperation().GetInvocation()) != 0 {
+		if err = w.reconcileNative(ctx, latestActor, "checkpoint-local"); err != nil {
+			return nil, err
+		}
+	}
+	settledOrigin := proto.CloneOf(latestActor.GetStatus().GetPendingNativeOperation())
+	settledUID := latestActor.GetMetadata().GetUid()
 
 	if latestActor.GetStatus().GetState() != ateapipb.ActorState_ACTOR_STATE_PAUSING {
 		return nil, status.Error(codes.FailedPrecondition, "pause publication requires PAUSING; unresolved origin retained")
@@ -276,6 +290,9 @@ func (w *ActorWorkflow) ensurePausedFinalized(ctx context.Context, actorRef reso
 		if latestActor.GetStatus().GetState() != ateapipb.ActorState_ACTOR_STATE_PAUSING {
 			return nil, status.Error(codes.FailedPrecondition, "actor changed during pause publication; origin retained")
 		}
+		if latestActor.GetMetadata().GetUid() != settledUID || !proto.Equal(settledOrigin, latestActor.GetStatus().GetPendingNativeOperation()) {
+			return nil, status.Error(codes.Aborted, "native publication identity changed")
+		}
 		wasAlreadyCrashed := latestActor.GetStatus().GetState() == ateapipb.ActorState_ACTOR_STATE_CRASHED
 		newState := ateapipb.ActorState_ACTOR_STATE_PAUSED
 		var crashStatus *ateapipb.ActorCrash
@@ -308,6 +325,9 @@ func (w *ActorWorkflow) ensurePausedFinalized(ctx context.Context, actorRef reso
 				localSnapshot := &ateapipb.LocalSnapshot{
 					SnapshotName: toUpdate.GetStatus().GetInProgressLocalSnapshotName(),
 					ContentScope: contentScope,
+				}
+				if len(toUpdate.GetStatus().GetPendingNativeOperation().GetInvocation()) != 0 {
+					localSnapshot.SourceWorker = proto.CloneOf(toUpdate.GetStatus().GetPendingNativeOperation().GetSourceWorker())
 				}
 				if newState != ateapipb.ActorState_ACTOR_STATE_CRASHED {
 					localSnapshot.NodeVmsWithLocalSnapshots = []string{nodeName}
