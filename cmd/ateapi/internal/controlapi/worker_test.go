@@ -1212,7 +1212,10 @@ func TestProveEmptyDraining_NativeRefusals(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertRefusal(drained, store.OwnershipStabilityUnproven)
+	proof, err := svc.ProveEmptyDraining(ctx, &ateapipb.ProveEmptyDrainingRequest{ExpectedWorker: drained})
+	if err != nil || proof.GetOwnershipGeneration() == "" || !proto.Equal(proof.GetWorker(), drained) {
+		t.Fatalf("empty drained worker must have a complete positive proof: %v %v", proof, err)
+	}
 	drifted := proto.CloneOf(drained)
 	drifted.NodeName = "other-node"
 	assertRefusal(drifted, store.OwnershipMappingChanged)

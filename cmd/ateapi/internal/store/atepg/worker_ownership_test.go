@@ -58,7 +58,7 @@ func TestProveEmptyDraining_ProductionRefusalsAndNoEffects(t *testing.T) {
 				}
 			}
 			expected := proto.CloneOf(worker)
-			reason := store.OwnershipStabilityUnproven
+			reason := ""
 			switch scenario {
 			case "active":
 				reason = store.OwnershipNotDraining
@@ -157,7 +157,11 @@ func TestProveEmptyDraining_ProductionRefusalsAndNoEffects(t *testing.T) {
 				t.Fatal(err)
 			}
 			proof, err := p.ProveEmptyDraining(ctx, expected)
-			requireOwnershipRefusal(t, proof, err, reason)
+			if reason == "" {
+				requireOwnershipProof(t, proof, err, expected)
+			} else {
+				requireOwnershipRefusal(t, proof, err, reason)
+			}
 			after, versionAfter, outboxAfter, assignmentsAfter := snapshot()
 			var actorAfter []byte
 			if err := p.pool.QueryRow(ctx, `SELECT proto FROM actors LIMIT 1`).Scan(&actorAfter); err != nil && !errors.Is(err, pgx.ErrNoRows) {
@@ -218,7 +222,7 @@ func TestProveEmptyDraining_PublicationAndRetentionInterleaving(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	actor, err := p.CreateActor(ctx, &ateapipb.Actor{Metadata: &ateapipb.ResourceMetadata{Atespace: "proof-team", Name: "publishing"}, Status: &ateapipb.ActorStatus{State: ateapipb.ActorState_ACTOR_STATE_SUSPENDED}})
+	actor, err := p.CreateActor(ctx, &ateapipb.Actor{Metadata: &ateapipb.ResourceMetadata{Atespace: "proof-team", Name: "publishing"}, Status: &ateapipb.ActorStatus{State: ateapipb.ActorState_ACTOR_STATE_PAUSING, WorkerAssignment: &ateapipb.WorkerAssignment{Worker: &ateapipb.ObjectRef{Name: worker.GetMetadata().GetName()}, WorkerNamespace: worker.GetWorkerNamespace(), WorkerPod: worker.GetWorkerPod(), WorkerPodUid: worker.GetWorkerPodUid(), NodeName: worker.GetNodeName()}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -234,6 +238,7 @@ func TestProveEmptyDraining_PublicationAndRetentionInterleaving(t *testing.T) {
 				return ctx.Err()
 			}
 			a.Status.State = ateapipb.ActorState_ACTOR_STATE_PAUSED
+			a.Status.WorkerAssignment = nil
 			a.Status.LocalSnapshot = &ateapipb.LocalSnapshot{SnapshotName: "checkpoint", NodeVmsWithLocalSnapshots: []string{worker.GetNodeName()}}
 			return nil
 		})
@@ -247,7 +252,7 @@ func TestProveEmptyDraining_PublicationAndRetentionInterleaving(t *testing.T) {
 	proof, proofErr := p.ProveEmptyDraining(ctx, worker)
 	close(publish)
 	updateErr := <-result
-	requireOwnershipRefusal(t, proof, proofErr, store.OwnershipStabilityUnproven)
+	requireOwnershipRefusal(t, proof, proofErr, store.OwnershipBusy)
 	if updateErr != nil {
 		t.Fatal(updateErr)
 	}
@@ -268,7 +273,7 @@ func TestProveEmptyDraining_PublicationAndRetentionInterleaving(t *testing.T) {
 		t.Fatal(err)
 	}
 	proof, proofErr = p.ProveEmptyDraining(ctx, worker)
-	requireOwnershipRefusal(t, proof, proofErr, store.OwnershipStabilityUnproven)
+	requireOwnershipProof(t, proof, proofErr, worker)
 }
 
 // These unit cases exercise production dependency policy without a database;
@@ -354,15 +359,31 @@ func TestQualifiedRunningAssignment(t *testing.T) {
 		name   string
 		mutate func(*ateapipb.Actor, *ateapipb.Worker, *ateapipb.ActorAssignment)
 	}{
-		{"missing-pointer", func(a *ateapipb.Actor, _ *ateapipb.Worker, _ *ateapipb.ActorAssignment) { a.Status.WorkerAssignment = nil }},
-		{"missing-pod-uid", func(a *ateapipb.Actor, _ *ateapipb.Worker, _ *ateapipb.ActorAssignment) { a.Status.WorkerAssignment.WorkerPodUid = "" }},
-		{"missing-pool", func(a *ateapipb.Actor, _ *ateapipb.Worker, _ *ateapipb.ActorAssignment) { a.Status.WorkerAssignment.WorkerPool = "" }},
-		{"missing-ip", func(a *ateapipb.Actor, _ *ateapipb.Worker, _ *ateapipb.ActorAssignment) { a.Status.WorkerAssignment.WorkerPodIp = "" }},
-		{"unrelated-snapshot-node", func(a *ateapipb.Actor, _ *ateapipb.Worker, _ *ateapipb.ActorAssignment) { a.Status.LocalSnapshot.NodeVmsWithLocalSnapshots = []string{"unrelated"} }},
-		{"operation-pending", func(a *ateapipb.Actor, _ *ateapipb.Worker, _ *ateapipb.ActorAssignment) { a.Status.InProgressLocalSnapshotName = "pending" }},
-		{"worker-identity-reused", func(_ *ateapipb.Actor, w *ateapipb.Worker, _ *ateapipb.ActorAssignment) { w.WorkerPodUid = "44444444-4444-4444-8444-444444444444" }},
+		{"missing-pointer", func(a *ateapipb.Actor, _ *ateapipb.Worker, _ *ateapipb.ActorAssignment) {
+			a.Status.WorkerAssignment = nil
+		}},
+		{"missing-pod-uid", func(a *ateapipb.Actor, _ *ateapipb.Worker, _ *ateapipb.ActorAssignment) {
+			a.Status.WorkerAssignment.WorkerPodUid = ""
+		}},
+		{"missing-pool", func(a *ateapipb.Actor, _ *ateapipb.Worker, _ *ateapipb.ActorAssignment) {
+			a.Status.WorkerAssignment.WorkerPool = ""
+		}},
+		{"missing-ip", func(a *ateapipb.Actor, _ *ateapipb.Worker, _ *ateapipb.ActorAssignment) {
+			a.Status.WorkerAssignment.WorkerPodIp = ""
+		}},
+		{"unrelated-snapshot-node", func(a *ateapipb.Actor, _ *ateapipb.Worker, _ *ateapipb.ActorAssignment) {
+			a.Status.LocalSnapshot.NodeVmsWithLocalSnapshots = []string{"unrelated"}
+		}},
+		{"operation-pending", func(a *ateapipb.Actor, _ *ateapipb.Worker, _ *ateapipb.ActorAssignment) {
+			a.Status.InProgressLocalSnapshotName = "pending"
+		}},
+		{"worker-identity-reused", func(_ *ateapipb.Actor, w *ateapipb.Worker, _ *ateapipb.ActorAssignment) {
+			w.WorkerPodUid = "44444444-4444-4444-8444-444444444444"
+		}},
 		{"empty-allocation", func(_ *ateapipb.Actor, w *ateapipb.Worker, _ *ateapipb.ActorAssignment) { w.Status.Allocated = nil }},
-		{"actor-identity-reused", func(_ *ateapipb.Actor, _ *ateapipb.Worker, c *ateapipb.ActorAssignment) { c.ActorUid = "44444444-4444-4444-8444-444444444444" }},
+		{"actor-identity-reused", func(_ *ateapipb.Actor, _ *ateapipb.Worker, c *ateapipb.ActorAssignment) {
+			c.ActorUid = "44444444-4444-4444-8444-444444444444"
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			a, w, c := proto.CloneOf(actor), proto.CloneOf(live), proto.CloneOf(claim)
@@ -386,5 +407,12 @@ func TestQualifiedRunningAssignment(t *testing.T) {
 	other.NodeName = "other-node"
 	if err := actorRetirementDependency(actor, other, live, claim); err != nil {
 		t.Fatalf("independent node acquired a dependency on historical metadata: %v", err)
+	}
+}
+
+func requireOwnershipProof(t *testing.T, proof *ateapipb.ProveEmptyDrainingResponse, err error, worker *ateapipb.Worker) {
+	t.Helper()
+	if err != nil || proof == nil || !proto.Equal(proof.GetWorker(), worker) || len(proof.GetOwnershipGeneration()) != len("observed-v1:")+64 {
+		t.Fatalf("incomplete exact worker proof: proof=%v err=%v", proof, err)
 	}
 }

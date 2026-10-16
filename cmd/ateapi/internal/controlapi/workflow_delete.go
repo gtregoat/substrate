@@ -50,6 +50,10 @@ func (w *ActorWorkflow) DeleteActor(ctx context.Context, actorRef resources.Acto
 		return nil, status.Error(codes.Aborted, "concurrent update conflict, please retry")
 	}
 
+	if err := requireSettledNativeSnapshot(actor); err != nil {
+		return nil, err
+	}
+
 	if actor, err = w.ensureMarkedDeleting(ctx, actorRef, actor, anyState); err != nil {
 		return nil, err
 	}
@@ -429,6 +433,9 @@ func (w *ActorWorkflow) finalizeDeleted(ctx context.Context, actor *ateapipb.Act
 	ctx, done := stepSpan(ctx, "FinalizeDeleted")
 	defer func() { err = done(err) }()
 
+	if err := requireSettledNativeSnapshot(actor); err != nil {
+		return nil, err
+	}
 	actorRef := resources.ActorRefFromActor(actor)
 	precondition := store.DeletePreconditions{UID: actor.GetMetadata().GetUid(), Version: actor.GetMetadata().GetVersion()}
 	deleted, err := w.store.DeleteActor(ctx, actorRef, precondition)
