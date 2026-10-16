@@ -198,6 +198,10 @@ func (w *ActorWorkflow) ensureAteletPaused(ctx context.Context, actorRef resourc
 	}
 	wireSnapshotScope = ateattr.SnapshotScopeValue(req.Scope)
 
+	if actor, err = w.recordNativeSnapshotOrigin(ctx, actorRef, actor, "checkpoint-local"); err != nil {
+		return wireSnapshotScope, err
+	}
+
 	if _, err = client.Checkpoint(ctx, req); err != nil {
 		slog.LogAttrs(ctx, slog.LevelError, "Setting Actor to crashed due to error",
 			append(ateattr.ActorRefLogAttrs(actorRef), slog.Any("err", err))...)
@@ -223,6 +227,10 @@ func (w *ActorWorkflow) ensurePausedFinalized(ctx context.Context, actorRef reso
 	latestActor, err := w.store.GetActor(ctx, actorRef)
 	if err != nil {
 		return nil, err
+	}
+
+	if latestActor.GetStatus().GetState() != ateapipb.ActorState_ACTOR_STATE_PAUSING {
+		return nil, status.Error(codes.FailedPrecondition, "pause publication requires PAUSING; unresolved origin retained")
 	}
 
 	// 1. Free the worker (if it hasn't been freed yet)
@@ -254,6 +262,9 @@ func (w *ActorWorkflow) ensurePausedFinalized(ctx context.Context, actorRef reso
 		latestActor, err = w.store.GetActor(ctx, actorRef)
 		if err != nil {
 			return nil, err
+		}
+		if latestActor.GetStatus().GetState() != ateapipb.ActorState_ACTOR_STATE_PAUSING {
+			return nil, status.Error(codes.FailedPrecondition, "actor changed during pause publication; origin retained")
 		}
 		wasAlreadyCrashed := latestActor.GetStatus().GetState() == ateapipb.ActorState_ACTOR_STATE_CRASHED
 		newState := ateapipb.ActorState_ACTOR_STATE_PAUSED
@@ -293,6 +304,9 @@ func (w *ActorWorkflow) ensurePausedFinalized(ctx context.Context, actorRef reso
 				}
 				toUpdate.Status.LocalSnapshot = localSnapshot
 				toUpdate.Status.InProgressLocalSnapshotName = ""
+			}
+			if newState == ateapipb.ActorState_ACTOR_STATE_PAUSED {
+				toUpdate.Status.PendingNativeSnapshot = nil
 			}
 			toUpdate.Status.WorkerAssignment = nil
 			return nil

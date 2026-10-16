@@ -354,15 +354,31 @@ func TestQualifiedRunningAssignment(t *testing.T) {
 		name   string
 		mutate func(*ateapipb.Actor, *ateapipb.Worker, *ateapipb.ActorAssignment)
 	}{
-		{"missing-pointer", func(a *ateapipb.Actor, _ *ateapipb.Worker, _ *ateapipb.ActorAssignment) { a.Status.WorkerAssignment = nil }},
-		{"missing-pod-uid", func(a *ateapipb.Actor, _ *ateapipb.Worker, _ *ateapipb.ActorAssignment) { a.Status.WorkerAssignment.WorkerPodUid = "" }},
-		{"missing-pool", func(a *ateapipb.Actor, _ *ateapipb.Worker, _ *ateapipb.ActorAssignment) { a.Status.WorkerAssignment.WorkerPool = "" }},
-		{"missing-ip", func(a *ateapipb.Actor, _ *ateapipb.Worker, _ *ateapipb.ActorAssignment) { a.Status.WorkerAssignment.WorkerPodIp = "" }},
-		{"unrelated-snapshot-node", func(a *ateapipb.Actor, _ *ateapipb.Worker, _ *ateapipb.ActorAssignment) { a.Status.LocalSnapshot.NodeVmsWithLocalSnapshots = []string{"unrelated"} }},
-		{"operation-pending", func(a *ateapipb.Actor, _ *ateapipb.Worker, _ *ateapipb.ActorAssignment) { a.Status.InProgressLocalSnapshotName = "pending" }},
-		{"worker-identity-reused", func(_ *ateapipb.Actor, w *ateapipb.Worker, _ *ateapipb.ActorAssignment) { w.WorkerPodUid = "44444444-4444-4444-8444-444444444444" }},
+		{"missing-pointer", func(a *ateapipb.Actor, _ *ateapipb.Worker, _ *ateapipb.ActorAssignment) {
+			a.Status.WorkerAssignment = nil
+		}},
+		{"missing-pod-uid", func(a *ateapipb.Actor, _ *ateapipb.Worker, _ *ateapipb.ActorAssignment) {
+			a.Status.WorkerAssignment.WorkerPodUid = ""
+		}},
+		{"missing-pool", func(a *ateapipb.Actor, _ *ateapipb.Worker, _ *ateapipb.ActorAssignment) {
+			a.Status.WorkerAssignment.WorkerPool = ""
+		}},
+		{"missing-ip", func(a *ateapipb.Actor, _ *ateapipb.Worker, _ *ateapipb.ActorAssignment) {
+			a.Status.WorkerAssignment.WorkerPodIp = ""
+		}},
+		{"unrelated-snapshot-node", func(a *ateapipb.Actor, _ *ateapipb.Worker, _ *ateapipb.ActorAssignment) {
+			a.Status.LocalSnapshot.NodeVmsWithLocalSnapshots = []string{"unrelated"}
+		}},
+		{"operation-pending", func(a *ateapipb.Actor, _ *ateapipb.Worker, _ *ateapipb.ActorAssignment) {
+			a.Status.InProgressLocalSnapshotName = "pending"
+		}},
+		{"worker-identity-reused", func(_ *ateapipb.Actor, w *ateapipb.Worker, _ *ateapipb.ActorAssignment) {
+			w.WorkerPodUid = "44444444-4444-4444-8444-444444444444"
+		}},
 		{"empty-allocation", func(_ *ateapipb.Actor, w *ateapipb.Worker, _ *ateapipb.ActorAssignment) { w.Status.Allocated = nil }},
-		{"actor-identity-reused", func(_ *ateapipb.Actor, _ *ateapipb.Worker, c *ateapipb.ActorAssignment) { c.ActorUid = "44444444-4444-4444-8444-444444444444" }},
+		{"actor-identity-reused", func(_ *ateapipb.Actor, _ *ateapipb.Worker, c *ateapipb.ActorAssignment) {
+			c.ActorUid = "44444444-4444-4444-8444-444444444444"
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			a, w, c := proto.CloneOf(actor), proto.CloneOf(live), proto.CloneOf(claim)
