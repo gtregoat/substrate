@@ -199,7 +199,7 @@ func (w *ActorWorkflow) ensureAteletPaused(ctx context.Context, actorRef resourc
 	}
 	wireSnapshotScope = ateattr.SnapshotScopeValue(req.Scope)
 
-	if actor, err = w.recordNativeSnapshotOrigin(ctx, actorRef, actor, "checkpoint-local"); err != nil {
+	if actor, err = w.recordNativeOperationOrigin(ctx, actorRef, actor, "checkpoint-local", req); err != nil {
 		return wireSnapshotScope, err
 	}
 
@@ -261,7 +261,7 @@ func (w *ActorWorkflow) ensurePausedFinalized(ctx context.Context, actorRef reso
 
 		// A worker may disappear or be replaced after a successful checkpoint.
 		// Publish the recorded dispatch node, never the replacement's mapping.
-		if origin := latestActor.GetStatus().GetPendingNativeSnapshot(); origin != nil {
+		if origin := latestActor.GetStatus().GetPendingNativeOperation(); origin != nil {
 			if origin.GetOperation() != "checkpoint-local" || origin.GetLocalSnapshotName() != latestActor.GetStatus().GetInProgressLocalSnapshotName() || !proto.Equal(origin.GetAssignment(), assignment) || origin.GetSourceWorker().GetNodeName() == "" {
 				return nil, status.Error(codes.FailedPrecondition, "pause origin changed before publication")
 			}
@@ -304,7 +304,7 @@ func (w *ActorWorkflow) ensurePausedFinalized(ctx context.Context, actorRef reso
 				toUpdate.Status.Crash = crashStatus
 			}
 			// TODO(dberkov) - what if InProgressLocalSnapshotName is empty? That shouldn't be possible.
-			if toUpdate.GetStatus().GetInProgressLocalSnapshotName() != "" {
+			if newState == ateapipb.ActorState_ACTOR_STATE_PAUSED && toUpdate.GetStatus().GetInProgressLocalSnapshotName() != "" {
 				localSnapshot := &ateapipb.LocalSnapshot{
 					SnapshotName: toUpdate.GetStatus().GetInProgressLocalSnapshotName(),
 					ContentScope: contentScope,
@@ -316,7 +316,7 @@ func (w *ActorWorkflow) ensurePausedFinalized(ctx context.Context, actorRef reso
 				toUpdate.Status.InProgressLocalSnapshotName = ""
 			}
 			if newState == ateapipb.ActorState_ACTOR_STATE_PAUSED {
-				toUpdate.Status.PendingNativeSnapshot = nil
+				toUpdate.Status.PendingNativeOperation = nil
 			}
 			toUpdate.Status.WorkerAssignment = nil
 			return nil

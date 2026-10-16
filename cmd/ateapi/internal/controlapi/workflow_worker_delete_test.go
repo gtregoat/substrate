@@ -23,11 +23,13 @@ import (
 	"github.com/agent-substrate/substrate/cmd/ateapi/internal/store"
 	"github.com/agent-substrate/substrate/cmd/ateapi/internal/store/storetest"
 	"github.com/agent-substrate/substrate/internal/ateattr"
+	"github.com/agent-substrate/substrate/internal/proto/ateletpb"
 	"github.com/agent-substrate/substrate/internal/resources"
 	"github.com/agent-substrate/substrate/pkg/proto/ateapipb"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 )
 
 // newWorkerDeleteWorkflow returns a workflow backed by a real store, which is
@@ -132,10 +134,9 @@ func TestDeleteWorkerWorkflow_ReleasesBoundActor(t *testing.T) {
 	if got.GetStatus().GetWorkerAssignment() != nil {
 		t.Errorf("actor worker assignment = %v, want it cleared", got.GetStatus().GetWorkerAssignment())
 	}
-	// The local checkpoint lived on the node that went away, so it dies with
-	// the worker.
-	if got.GetStatus().GetInProgressLocalSnapshotName() != "" {
-		t.Errorf("in-progress local checkpoint not cleared: %v", got.GetStatus())
+	// Pod deletion does not establish node-local operation settlement.
+	if got.GetStatus().GetInProgressLocalSnapshotName() != "partial-local-snapshot" {
+		t.Errorf("in-progress local checkpoint origin was forgotten: %v", got.GetStatus())
 	}
 	// The durable one is kept: it names the prefix whatever atelet already
 	// uploaded lives under, which delete or revert needs to collect it.
@@ -379,4 +380,34 @@ type failingUpdateActorStore struct {
 
 func (f failingUpdateActorStore) UpdateActor(context.Context, resources.ActorRef, store.Precondition, func(*ateapipb.Actor) error) (*ateapipb.Actor, error) {
 	return nil, f.err
+}
+
+func TestDeleteWorkerWorkflow_RetainsNativeOrigin(t *testing.T) {
+	ctx := context.Background()
+	wf, p := newWorkerDeleteWorkflow(t)
+	seedAPIWorker(t, ctx, p, validWorker(apiWorkerName))
+	actor := seedAPIActor(t, ctx, p, ateapipb.ActorState_ACTOR_STATE_RESUMING, func(a *ateapipb.Actor) { a.Status.WorkerAssignment.NodeName = "node-1" })
+	worker := assignAPIWorker(t, ctx, p, apiWorkerName, actor.GetMetadata().GetUid())
+	actorWorkflow := &ActorWorkflow{store: p}
+	recorded, err := actorWorkflow.recordNativeOperationOrigin(ctx, apiActorRef, actor, "restore", &ateletpb.RestoreRequest{ActorUid: actor.GetMetadata().GetUid(), TargetAteomUid: worker.GetWorkerPodUid()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := wf.DeleteWorker(ctx, apiWorkerName, store.DeletePreconditions{}); err != nil {
+		t.Fatal(err)
+	}
+	crashed, err := p.GetActor(ctx, apiActorRef)
+	if err != nil || !proto.Equal(crashed.GetStatus().GetPendingNativeOperation(), recorded.GetStatus().GetPendingNativeOperation()) || crashed.GetStatus().GetWorkerAssignment() != nil {
+		t.Fatalf("worker removal lost operation origin: %v %v", crashed, err)
+	}
+	sibling := seedAPIWorker(t, ctx, p, validWorker(apiOtherWorkerName))
+	sibling, err = p.DrainEmptyWorker(ctx, sibling.GetMetadata().GetName(), store.PreconditionFrom(sibling))
+	if err != nil {
+		t.Fatal(err)
+	}
+	proof, err := p.ProveEmptyDraining(ctx, sibling)
+	var refusal *store.OwnershipRefusal
+	if proof != nil || !errors.As(err, &refusal) || refusal.Reason != store.OwnershipOperationPending {
+		t.Fatalf("worker removal erased containing-node dependency: %v %v", proof, err)
+	}
 }
