@@ -23,6 +23,7 @@ import (
 	"github.com/agent-substrate/substrate/pkg/proto/ateapipb"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 )
 
 // TestEnsureMarkedReverting_StateMatrix pins which states a revert is accepted
@@ -100,7 +101,6 @@ func TestRevertActor_ReturnsActorToItsSnapshot(t *testing.T) {
 			mustUpdateActorStatus(t, ctx, st, actor, func(s *ateapipb.ActorStatus) {
 				s.ExternalSnapshot = &ateapipb.ExternalSnapshot{SnapshotUri: keptURI}
 				s.LocalSnapshot = &ateapipb.LocalSnapshot{SnapshotName: "local-1"}
-				s.InProgressLocalSnapshotName = "local-in-progress"
 			})
 
 			reverted, err := w.RevertActor(ctx, actorRef)
@@ -351,13 +351,11 @@ func TestEnsureRevertedFinalized_NoObjectStore(t *testing.T) {
 
 	actorRef := resources.ActorRefFromActor(actor)
 	finalized, err := w.ensureRevertedFinalized(ctx, actorRef)
-	if err != nil {
-		t.Fatalf("ensureRevertedFinalized: %v", err)
+	if status.Code(err) != codes.FailedPrecondition || finalized != nil {
+		t.Fatalf("unresolved native work finalized without settlement: %v %v", finalized, err)
 	}
-	if got := finalized.GetStatus().GetState(); got != ateapipb.ActorState_ACTOR_STATE_SUSPENDED {
-		t.Errorf("state = %v, want SUSPENDED", got)
-	}
-	if got := finalized.GetStatus().GetInProgressSnapshotUri(); got != "" {
-		t.Errorf("in-progress snapshot uri = %q, want empty", got)
+	after, err := persistence.GetActor(ctx, actorRef)
+	if err != nil || !proto.Equal(after, actor) {
+		t.Fatalf("refusal must preserve unresolved origin: %v %v", after, err)
 	}
 }

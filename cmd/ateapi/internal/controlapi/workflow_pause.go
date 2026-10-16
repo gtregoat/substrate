@@ -29,6 +29,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 )
 
 // PauseActor executes the workflow to pause a running actor. Idempotent:
@@ -198,6 +199,10 @@ func (w *ActorWorkflow) ensureAteletPaused(ctx context.Context, actorRef resourc
 	}
 	wireSnapshotScope = ateattr.SnapshotScopeValue(req.Scope)
 
+	if actor, err = w.recordNativeSnapshotOrigin(ctx, actorRef, actor, "checkpoint-local"); err != nil {
+		return wireSnapshotScope, err
+	}
+
 	if _, err = client.Checkpoint(ctx, req); err != nil {
 		slog.LogAttrs(ctx, slog.LevelError, "Setting Actor to crashed due to error",
 			append(ateattr.ActorRefLogAttrs(actorRef), slog.Any("err", err))...)
@@ -225,6 +230,10 @@ func (w *ActorWorkflow) ensurePausedFinalized(ctx context.Context, actorRef reso
 		return nil, err
 	}
 
+	if latestActor.GetStatus().GetState() != ateapipb.ActorState_ACTOR_STATE_PAUSING {
+		return nil, status.Error(codes.FailedPrecondition, "pause publication requires PAUSING; unresolved origin retained")
+	}
+
 	// 1. Free the worker (if it hasn't been freed yet)
 	if assignment := latestActor.GetStatus().GetWorkerAssignment(); assignment != nil {
 		worker, err := w.store.GetWorker(ctx, assignment.GetWorker().GetName())
@@ -250,10 +259,22 @@ func (w *ActorWorkflow) ensurePausedFinalized(ctx context.Context, actorRef reso
 			}
 		}
 
+		// A worker may disappear or be replaced after a successful checkpoint.
+		// Publish the recorded dispatch node, never the replacement's mapping.
+		if origin := latestActor.GetStatus().GetPendingNativeSnapshot(); origin != nil {
+			if origin.GetOperation() != "checkpoint-local" || origin.GetLocalSnapshotName() != latestActor.GetStatus().GetInProgressLocalSnapshotName() || !proto.Equal(origin.GetAssignment(), assignment) || origin.GetSourceWorker().GetNodeName() == "" {
+				return nil, status.Error(codes.FailedPrecondition, "pause origin changed before publication")
+			}
+			nodeName = origin.GetSourceWorker().GetNodeName()
+		}
+
 		// 2. Clear the actor's assignment, now that the worker is freed
 		latestActor, err = w.store.GetActor(ctx, actorRef)
 		if err != nil {
 			return nil, err
+		}
+		if latestActor.GetStatus().GetState() != ateapipb.ActorState_ACTOR_STATE_PAUSING {
+			return nil, status.Error(codes.FailedPrecondition, "actor changed during pause publication; origin retained")
 		}
 		wasAlreadyCrashed := latestActor.GetStatus().GetState() == ateapipb.ActorState_ACTOR_STATE_CRASHED
 		newState := ateapipb.ActorState_ACTOR_STATE_PAUSED
@@ -293,6 +314,9 @@ func (w *ActorWorkflow) ensurePausedFinalized(ctx context.Context, actorRef reso
 				}
 				toUpdate.Status.LocalSnapshot = localSnapshot
 				toUpdate.Status.InProgressLocalSnapshotName = ""
+			}
+			if newState == ateapipb.ActorState_ACTOR_STATE_PAUSED {
+				toUpdate.Status.PendingNativeSnapshot = nil
 			}
 			toUpdate.Status.WorkerAssignment = nil
 			return nil

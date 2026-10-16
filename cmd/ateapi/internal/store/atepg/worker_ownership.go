@@ -16,7 +16,10 @@ package atepg
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
+	"fmt"
 	"net"
 
 	"github.com/agent-substrate/substrate/cmd/ateapi/internal/store"
@@ -58,12 +61,11 @@ func sameOwnershipMapping(a, b *ateapipb.Worker) bool {
 	return a.GetMetadata().GetName() == b.GetMetadata().GetName() && a.GetWorkerNamespace() == b.GetWorkerNamespace() && a.GetWorkerPool() == b.GetWorkerPool() && a.GetWorkerPod() == b.GetWorkerPod() && a.GetWorkerPodUid() == b.GetWorkerPodUid() && a.GetNodeName() == b.GetNodeName() && a.GetIp() == b.GetIp() && a.GetSandboxClass() == b.GetSandboxClass()
 }
 
-// ProveEmptyDraining evaluates native refusals under the exact binding lock.
-// Empty observations alone cannot produce success: existing lifecycle writers
-// do not share a durable node retirement fence, and operation leases do not
-// record node ownership after actor pointers are cleared. Until an admitted
-// boundary proves those facts, the last result is STABILITY_UNPROVEN. This
-// method has no mutations, events, version changes or partial-success response.
+// ProveEmptyDraining returns per-worker retirement evidence under the binding
+// lock. DRAINING excludes new binds on this incarnation. Atomic lifecycle
+// publication conserves its pointer, local ownership, or pending native origin.
+// Other workers require their own creation/ACTIVE protection and final proof;
+// this evidence never authorizes unconditional containing-node retirement.
 func (p *Persistence) ProveEmptyDraining(ctx context.Context, expected *ateapipb.Worker) (*ateapipb.ProveEmptyDrainingResponse, error) {
 	guard := store.PreconditionFrom(expected)
 	if err := guard.Validate(); err != nil {
@@ -85,7 +87,7 @@ func (p *Persistence) ProveEmptyDraining(ctx context.Context, expected *ateapipb
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback(ctx) //nolint:errcheck // This read-only proof attempt always refuses; release the binding lock.
+	defer tx.Rollback(ctx) //nolint:errcheck // Release the binding lock on every refusal/error.
 	var uid string
 	var version int64
 	var data []byte
@@ -123,11 +125,16 @@ func (p *Persistence) ProveEmptyDraining(ctx context.Context, expected *ateapipb
 	if assigned {
 		return nil, ownershipRefusal(store.OwnershipBusy)
 	}
+	// Hash actual observed records, not a synthetic durable generation.
+	evidence := sha256.New()
+	fmt.Fprintf(evidence, "worker-retirement-v1:%d:", len(data))
+	evidence.Write(data)
 	rows, err := tx.Query(ctx, `SELECT a.atespace, a.name, a.uid, a.version, a.proto,
         w.proto, COALESCE(w.name, ''), COALESCE(w.uid::text, ''), COALESCE(w.version, 0), wa.proto
         FROM actors a
         LEFT JOIN worker_assignments wa ON wa.actor_uid = a.uid
-        LEFT JOIN workers w ON w.name = wa.worker_name`)
+        LEFT JOIN workers w ON w.name = wa.worker_name
+        ORDER BY a.atespace, a.name`)
 	if err != nil {
 		return nil, err
 	}
@@ -159,21 +166,31 @@ func (p *Persistence) ProveEmptyDraining(ctx context.Context, expected *ateapipb
 		if err := actorRetirementDependency(actor, worker, live, claim); err != nil {
 			return nil, err
 		}
+		for _, observation := range [][]byte{data, liveData, claimData} {
+			fmt.Fprintf(evidence, "%d:", len(observation))
+			evidence.Write(observation)
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	// A sibling worker may bind and publish local state after this transaction
-	// releases its locks. Nor can current pointers identify a former node used by
-	// an in-flight operation. Neither a global history scan nor an external URI
-	// establishes a stable ownership generation. Do not manufacture one.
-	return nil, ownershipRefusal(store.OwnershipStabilityUnproven)
+	rows.Close()
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return &ateapipb.ProveEmptyDrainingResponse{
+		Worker:              worker,
+		OwnershipGeneration: "observed-v1:" + hex.EncodeToString(evidence.Sum(nil)),
+	}, nil
 }
 
 func actorRetirementDependency(actor *ateapipb.Actor, worker, live *ateapipb.Worker, claim *ateapipb.ActorAssignment) error {
 	s := actor.GetStatus()
 	if s == nil || s.GetState() < ateapipb.ActorState(1) || s.GetState() > ateapipb.ActorState(9) {
 		return ownershipRefusal(store.OwnershipUnknown)
+	}
+	if err := nativeSnapshotDependency(actor, worker); err != nil {
+		return err
 	}
 	relevant := false
 	if a := s.GetWorkerAssignment(); a != nil {
@@ -220,7 +237,7 @@ func actorRetirementDependency(actor *ateapipb.Actor, worker, live *ateapipb.Wor
 		return ownershipRefusal(store.OwnershipBusy)
 	}
 	// Unlocated in-flight state cannot be attributed to an unrelated node.
-	if s.GetWorkerAssignment() == nil && s.GetLocalSnapshot() == nil && (s.GetInProgressSnapshotUri() != "" || s.GetInProgressLocalSnapshotName() != "") {
+	if s.GetPendingNativeSnapshot() == nil && s.GetWorkerAssignment() == nil && (s.GetLocalSnapshot() == nil || s.GetState() != ateapipb.ActorState_ACTOR_STATE_SUSPENDING) && (s.GetInProgressSnapshotUri() != "" || s.GetInProgressLocalSnapshotName() != "") {
 		return ownershipRefusal(store.OwnershipUnknown)
 	}
 	return nil
@@ -232,7 +249,7 @@ func actorRetirementDependency(actor *ateapipb.Actor, worker, live *ateapipb.Wor
 func qualifiedRunningAssignment(actor *ateapipb.Actor, live *ateapipb.Worker, claim *ateapipb.ActorAssignment) bool {
 	s := actor.GetStatus()
 	a := s.GetWorkerAssignment()
-	if a == nil || live == nil || claim == nil || s.GetInProgressSnapshotUri() != "" || s.GetInProgressLocalSnapshotName() != "" {
+	if a == nil || live == nil || claim == nil || s.GetPendingNativeSnapshot() != nil || s.GetInProgressSnapshotUri() != "" || s.GetInProgressLocalSnapshotName() != "" {
 		return false
 	}
 	if a.GetWorker().GetName() == "" || a.GetWorker().GetAtespace() != "" || a.GetWorkerNamespace() == "" || a.GetWorkerPool() == "" || a.GetWorkerPod() == "" || a.GetNodeName() == "" || net.ParseIP(a.GetWorkerPodIp()) == nil {
@@ -263,4 +280,55 @@ func qualifiedRunningAssignment(actor *ateapipb.Actor, live *ateapipb.Worker, cl
 		}
 	}
 	return true
+}
+
+// nativeSnapshotDependency uses persisted dispatch provenance, including after
+// crash releases the scheduling reservation. A URI alone is never settlement.
+func nativeSnapshotDependency(actor *ateapipb.Actor, target *ateapipb.Worker) error {
+	s := actor.GetStatus()
+	op := s.GetPendingNativeSnapshot()
+	if op == nil {
+		return nil
+	}
+	if op.GetLocalSnapshotName() != s.GetInProgressLocalSnapshotName() || op.GetSnapshotUri() != s.GetInProgressSnapshotUri() {
+		return ownershipRefusal(store.OwnershipUnknown)
+	}
+	switch op.GetOperation() {
+	case "checkpoint-local", "checkpoint-external":
+		source, a := op.GetSourceWorker(), op.GetAssignment()
+		if source == nil || a == nil || op.GetLocalSource() != nil || a.GetWorker().GetName() == "" || a.GetWorker().GetAtespace() != "" || source.GetMetadata().GetAtespace() != "" || source.GetMetadata().GetVersion() < 1 || source.GetWorkerNamespace() == "" || source.GetWorkerPool() == "" || source.GetWorkerPod() == "" || source.GetNodeName() == "" || net.ParseIP(source.GetIp()) == nil {
+			return ownershipRefusal(store.OwnershipUnknown)
+		}
+		if _, err := uuid.Parse(source.GetMetadata().GetUid()); err != nil {
+			return ownershipRefusal(store.OwnershipUnknown)
+		}
+		if _, err := uuid.Parse(source.GetWorkerPodUid()); err != nil {
+			return ownershipRefusal(store.OwnershipUnknown)
+		}
+		if a.GetWorker().GetName() != source.GetMetadata().GetName() || a.GetNodeName() != source.GetNodeName() || a.GetWorkerNamespace() != source.GetWorkerNamespace() || a.GetWorkerPool() != source.GetWorkerPool() || a.GetWorkerPod() != source.GetWorkerPod() || a.GetWorkerPodUid() != source.GetWorkerPodUid() || a.GetWorkerPodIp() != source.GetIp() {
+			return ownershipRefusal(store.OwnershipUnknown)
+		}
+		if (op.GetOperation() == "checkpoint-local" && op.GetLocalSnapshotName() == "") || (op.GetOperation() == "checkpoint-external" && op.GetSnapshotUri() == "") {
+			return ownershipRefusal(store.OwnershipUnknown)
+		}
+		if source.GetMetadata().GetName() == target.GetMetadata().GetName() || source.GetNodeName() == target.GetNodeName() {
+			return ownershipRefusal(store.OwnershipOperationPending)
+		}
+	case "upload-local":
+		local := op.GetLocalSource()
+		if op.GetSourceWorker() != nil || op.GetAssignment() != nil || op.GetSnapshotUri() == "" || local.GetSnapshotName() == "" || len(local.GetNodeVmsWithLocalSnapshots()) == 0 || !proto.Equal(local, s.GetLocalSnapshot()) {
+			return ownershipRefusal(store.OwnershipUnknown)
+		}
+		for _, node := range local.GetNodeVmsWithLocalSnapshots() {
+			if node == "" {
+				return ownershipRefusal(store.OwnershipUnknown)
+			}
+			if node == target.GetNodeName() {
+				return ownershipRefusal(store.OwnershipOperationPending)
+			}
+		}
+	default:
+		return ownershipRefusal(store.OwnershipUnknown)
+	}
+	return nil
 }
