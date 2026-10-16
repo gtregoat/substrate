@@ -275,7 +275,8 @@ func TestActorRetirementDependency(t *testing.T) {
 		status *ateapipb.ActorStatus
 		reason string
 	}{
-		{"running-historical-checkpoint", &ateapipb.ActorStatus{State: ateapipb.ActorState_ACTOR_STATE_RUNNING, WorkerAssignment: &ateapipb.WorkerAssignment{Worker: &ateapipb.ObjectRef{Name: "unrelated-worker"}, NodeName: "unrelated-node"}, LocalSnapshot: &ateapipb.LocalSnapshot{SnapshotName: "historical", NodeVmsWithLocalSnapshots: []string{"node"}}}, ""},
+		{"running-unqualified-pointer", &ateapipb.ActorStatus{State: ateapipb.ActorState_ACTOR_STATE_RUNNING, WorkerAssignment: &ateapipb.WorkerAssignment{Worker: &ateapipb.ObjectRef{Name: "unrelated-worker"}, NodeName: "unrelated-node"}, LocalSnapshot: &ateapipb.LocalSnapshot{SnapshotName: "historical", NodeVmsWithLocalSnapshots: []string{"node"}}}, store.OwnershipUnknown},
+		{"running-missing-pointer", &ateapipb.ActorStatus{State: ateapipb.ActorState_ACTOR_STATE_RUNNING, LocalSnapshot: &ateapipb.LocalSnapshot{SnapshotName: "historical", NodeVmsWithLocalSnapshots: []string{"node"}}}, store.OwnershipUnknown},
 		{"external-independent", &ateapipb.ActorStatus{State: ateapipb.ActorState_ACTOR_STATE_SUSPENDED, ExternalSnapshot: &ateapipb.ExternalSnapshot{SnapshotUri: "gs://retained/object"}}, ""},
 		{"local-on-node", &ateapipb.ActorStatus{State: ateapipb.ActorState_ACTOR_STATE_PAUSED, LocalSnapshot: &ateapipb.LocalSnapshot{SnapshotName: "checkpoint", NodeVmsWithLocalSnapshots: []string{"node"}}}, store.OwnershipLocalCheckpoint},
 		{"local-on-other-node", &ateapipb.ActorStatus{State: ateapipb.ActorState_ACTOR_STATE_PAUSED, LocalSnapshot: &ateapipb.LocalSnapshot{SnapshotName: "checkpoint", NodeVmsWithLocalSnapshots: []string{"unrelated-node"}}}, ""},
@@ -287,7 +288,7 @@ func TestActorRetirementDependency(t *testing.T) {
 		{"unknown-state", &ateapipb.ActorStatus{State: ateapipb.ActorState(100)}, store.OwnershipUnknown},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			err := actorRetirementDependency(&ateapipb.Actor{Status: tc.status}, worker)
+			err := actorRetirementDependency(&ateapipb.Actor{Status: tc.status}, worker, nil, nil)
 			if tc.reason == "" {
 				if err != nil {
 					t.Fatal(err)

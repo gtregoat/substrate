@@ -17,6 +17,7 @@ package atepg
 import (
 	"context"
 	"errors"
+	"net"
 	"github.com/jackc/pgx/v5"
 
 	"github.com/agent-substrate/substrate/cmd/ateapi/internal/store"
@@ -122,7 +123,11 @@ func (p *Persistence) ProveEmptyDraining(ctx context.Context, expected *ateapipb
 	if assigned {
 		return nil, ownershipRefusal(store.OwnershipBusy)
 	}
-	rows, err := tx.Query(ctx, `SELECT atespace, name, uid, version, proto FROM actors`)
+	rows, err := tx.Query(ctx, `SELECT a.atespace, a.name, a.uid, a.version, a.proto,
+        w.proto, COALESCE(w.uid::text, ''), COALESCE(w.version, 0), wa.proto
+        FROM actors a
+        LEFT JOIN worker_assignments wa ON wa.actor_uid = a.uid
+        LEFT JOIN workers w ON w.name = wa.worker_name`)
 	if err != nil {
 		return nil, err
 	}
@@ -130,15 +135,28 @@ func (p *Persistence) ProveEmptyDraining(ctx context.Context, expected *ateapipb
 	for rows.Next() {
 		var space, name, uid string
 		var version int64
-		var data []byte
-		if err := rows.Scan(&space, &name, &uid, &version, &data); err != nil {
+		var data, liveData, claimData []byte
+		var liveUID string
+		var liveVersion int64
+		if err := rows.Scan(&space, &name, &uid, &version, &data, &liveData, &liveUID, &liveVersion, &claimData); err != nil {
 			return nil, err
 		}
 		actor := &ateapipb.Actor{}
 		if proto.Unmarshal(data, actor) != nil || ownershipUnknown(actor.ProtoReflect()) || validateProtoMetadataMatchesColumns("ownership actor", actor.GetMetadata(), uid, version) != nil || actor.GetMetadata().GetAtespace() != space || actor.GetMetadata().GetName() != name {
 			return nil, ownershipRefusal(store.OwnershipUnknown)
 		}
-		if err := actorRetirementDependency(actor, worker); err != nil {
+		var live *ateapipb.Worker
+		var claim *ateapipb.ActorAssignment
+		if len(liveData) != 0 && len(claimData) != 0 {
+			live = &ateapipb.Worker{}
+			claim = &ateapipb.ActorAssignment{}
+			if proto.Unmarshal(liveData, live) != nil || proto.Unmarshal(claimData, claim) != nil ||
+				ownershipUnknown(live.ProtoReflect()) || ownershipUnknown(claim.ProtoReflect()) ||
+				validateProtoMetadataMatchesColumns("live ownership worker", live.GetMetadata(), liveUID, liveVersion) != nil {
+				return nil, ownershipRefusal(store.OwnershipUnknown)
+			}
+		}
+		if err := actorRetirementDependency(actor, worker, live, claim); err != nil {
 			return nil, err
 		}
 	}
@@ -152,7 +170,7 @@ func (p *Persistence) ProveEmptyDraining(ctx context.Context, expected *ateapipb
 	return nil, ownershipRefusal(store.OwnershipStabilityUnproven)
 }
 
-func actorRetirementDependency(actor *ateapipb.Actor, worker *ateapipb.Worker) error {
+func actorRetirementDependency(actor *ateapipb.Actor, worker, live *ateapipb.Worker, claim *ateapipb.ActorAssignment) error {
 	s := actor.GetStatus()
 	if s == nil || s.GetState() < ateapipb.ActorState(1) || s.GetState() > ateapipb.ActorState(9) {
 		return ownershipRefusal(store.OwnershipUnknown)
@@ -167,9 +185,16 @@ func actorRetirementDependency(actor *ateapipb.Actor, worker *ateapipb.Worker) e
 			return ownershipRefusal(store.OwnershipMappingChanged)
 		}
 	}
-	// Resume leaves LocalSnapshot on RUNNING actors. It is historical there;
-	// running-origin suspend uses the assignment rather than uploading it.
-	if local := s.GetLocalSnapshot(); local != nil && s.GetState() != ateapipb.ActorState_ACTOR_STATE_RUNNING {
+	// Resume retains LocalSnapshot. Only a qualified live assignment can make
+	// it historical; a state enum or denormalized pointer alone is insufficient.
+	historical := false
+	if s.GetState() == ateapipb.ActorState_ACTOR_STATE_RUNNING {
+		if !qualifiedRunningAssignment(actor, live, claim) {
+			return ownershipRefusal(store.OwnershipUnknown)
+		}
+		historical = true
+	}
+	if local := s.GetLocalSnapshot(); local != nil {
 		if local.GetSnapshotName() == "" || len(local.GetNodeVmsWithLocalSnapshots()) == 0 {
 			return ownershipRefusal(store.OwnershipUnknown)
 		}
@@ -177,7 +202,7 @@ func actorRetirementDependency(actor *ateapipb.Actor, worker *ateapipb.Worker) e
 			if node == "" {
 				return ownershipRefusal(store.OwnershipUnknown)
 			}
-			if node == worker.GetNodeName() {
+			if node == worker.GetNodeName() && !historical {
 				if s.GetInProgressSnapshotUri() != "" {
 					return ownershipRefusal(store.OwnershipOperationPending)
 				}
@@ -199,4 +224,43 @@ func actorRetirementDependency(actor *ateapipb.Actor, worker *ateapipb.Worker) e
 		return ownershipRefusal(store.OwnershipUnknown)
 	}
 	return nil
+}
+
+// qualifiedRunningAssignment requires the durable claim and its authoritative
+// worker from the same database observation as the actor. This is qualification
+// of historical metadata, not a node-retirement fence or operation settlement.
+func qualifiedRunningAssignment(actor *ateapipb.Actor, live *ateapipb.Worker, claim *ateapipb.ActorAssignment) bool {
+	s := actor.GetStatus()
+	a := s.GetWorkerAssignment()
+	if a == nil || live == nil || claim == nil || s.GetInProgressSnapshotUri() != "" || s.GetInProgressLocalSnapshotName() != "" {
+		return false
+	}
+	if a.GetWorker().GetName() == "" || a.GetWorker().GetAtespace() != "" || a.GetWorkerNamespace() == "" || a.GetWorkerPool() == "" || a.GetWorkerPod() == "" || a.GetNodeName() == "" || net.ParseIP(a.GetWorkerPodIp()) == nil {
+		return false
+	}
+	if _, err := uuid.Parse(a.GetWorkerPodUid()); err != nil {
+		return false
+	}
+	if _, err := uuid.Parse(live.GetMetadata().GetUid()); err != nil {
+		return false
+	}
+	if live.GetMetadata().GetVersion() < 1 || live.GetStatus().GetAllocated().GetActors() < 1 || (live.GetStatus().GetState() != ateapipb.WorkerState_WORKER_STATE_ACTIVE && live.GetStatus().GetState() != ateapipb.WorkerState_WORKER_STATE_DRAINING) {
+		return false
+	}
+	if claim.GetActorUid() == "" || claim.GetActorUid() != actor.GetMetadata().GetUid() || claim.GetActor().GetName() != actor.GetMetadata().GetName() || claim.GetActor().GetAtespace() != actor.GetMetadata().GetAtespace() {
+		return false
+	}
+	if a.GetWorker().GetName() != live.GetMetadata().GetName() || a.GetWorkerNamespace() != live.GetWorkerNamespace() || a.GetWorkerPool() != live.GetWorkerPool() || a.GetWorkerPod() != live.GetWorkerPod() || a.GetWorkerPodUid() != live.GetWorkerPodUid() || a.GetNodeName() != live.GetNodeName() || a.GetWorkerPodIp() != live.GetIp() {
+		return false
+	}
+	if local := s.GetLocalSnapshot(); local != nil {
+		ownsSnapshot := false
+		for _, node := range local.GetNodeVmsWithLocalSnapshots() {
+			ownsSnapshot = ownsSnapshot || node == a.GetNodeName()
+		}
+		if !ownsSnapshot {
+			return false
+		}
+	}
+	return true
 }
