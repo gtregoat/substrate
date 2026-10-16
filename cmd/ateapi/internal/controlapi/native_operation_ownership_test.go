@@ -16,6 +16,8 @@ package controlapi
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"testing"
 
 	"github.com/agent-substrate/substrate/cmd/ateapi/internal/store"
@@ -142,5 +144,35 @@ func TestAcknowledgedTerminationRetainsExactOrigin(t *testing.T) {
 	actor.Status.State = ateapipb.ActorState_ACTOR_STATE_CRASHED
 	if err := requireSettledNativeOperation(actor); err != nil {
 		t.Fatalf("worker-loss crash erased positive ACK: %v", err)
+	}
+}
+
+func TestCompletedNativeInvocationRequiresExactTerminalEvidence(t *testing.T) {
+	invocation := &ateletpb.ExecuteOperationRequest{OperationId: "persisted-operation-id", WorkerUid: "worker-uid", WorkerPodUid: "worker-pod-uid", Request: &ateletpb.ExecuteOperationRequest_Run{Run: &ateletpb.RunRequest{ActorUid: "actor-uid", TargetAteomUid: "worker-pod-uid"}}}
+	b, err := (proto.MarshalOptions{Deterministic: true}).Marshal(invocation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := sha256.Sum256(b)
+	success := &ateletpb.OperationResult{OperationId: invocation.OperationId, RequestSha256: hex.EncodeToString(h[:]), State: ateletpb.OperationState_OPERATION_STATE_SUCCEEDED}
+	if err := completedNativeInvocation(invocation, success); err != nil {
+		t.Fatal(err)
+	}
+	for _, change := range []func(*ateletpb.OperationResult){
+		func(r *ateletpb.OperationResult) { r.OperationId = "another-operation" },
+		func(r *ateletpb.OperationResult) { r.RequestSha256 = "another-request" },
+		func(r *ateletpb.OperationResult) { r.State = ateletpb.OperationState_OPERATION_STATE_MISSING },
+		func(r *ateletpb.OperationResult) { r.State = ateletpb.OperationState_OPERATION_STATE_UNRESOLVED },
+		func(r *ateletpb.OperationResult) { r.State = ateletpb.OperationState_OPERATION_STATE_UNSPECIFIED },
+		func(r *ateletpb.OperationResult) { r.ProtoReflect().SetUnknown([]byte{0x78, 1}) },
+	} {
+		r := proto.CloneOf(success)
+		change(r)
+		if err := completedNativeInvocation(invocation, r); status.Code(err) != codes.FailedPrecondition {
+			t.Fatalf("inexact terminal evidence accepted: %v %v", r, err)
+		}
+	}
+	if err := completedNativeInvocation(invocation, nil); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("nil receipt: %v", err)
 	}
 }

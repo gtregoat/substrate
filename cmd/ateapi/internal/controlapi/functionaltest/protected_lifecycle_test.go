@@ -211,8 +211,8 @@ func TestWorkerProtection_ResumePublicationFailureDoesNotReplay(t *testing.T) {
 	if !called {
 		t.Fatal("fault occurred before native success")
 	}
-	if _, err := tc.client.ResumeActor(ctx, &ateapipb.ResumeActorRequest{Actor: ref}); status.Code(err) != codes.FailedPrecondition {
-		t.Fatalf("unknown completion retried: %v", err)
+	if _, err := tc.client.ResumeActor(ctx, &ateapipb.ResumeActorRequest{Actor: ref}); err != nil {
+		t.Fatalf("terminal receipt did not recover publication: %v", err)
 	}
 	tc.fakeAtelet.Lock.Lock()
 	replayed := tc.fakeAtelet.RunCalled
@@ -221,8 +221,8 @@ func TestWorkerProtection_ResumePublicationFailureDoesNotReplay(t *testing.T) {
 		t.Fatal("native Run replayed without a receipt")
 	}
 	after, err := tc.client.GetActor(ctx, &ateapipb.GetActorRequest{Actor: ref})
-	if err != nil || !proto.Equal(after, pending) {
-		t.Fatalf("retry discarded ownership: %v %v", after, err)
+	if err != nil || after.GetStatus().GetState() != ateapipb.ActorState_ACTOR_STATE_RUNNING || after.GetStatus().GetPendingNativeOperation() != nil {
+		t.Fatalf("receipt publication did not settle: %v %v", after, err)
 	}
 	worker, err := tc.client.GetWorker(ctx, &ateapipb.GetWorkerRequest{Worker: &ateapipb.ObjectRef{Name: workerName}})
 	if err != nil {
@@ -230,5 +230,115 @@ func TestWorkerProtection_ResumePublicationFailureDoesNotReplay(t *testing.T) {
 	}
 	if _, err := tc.client.DrainEmptyWorker(ctx, &ateapipb.DrainEmptyWorkerRequest{Worker: &ateapipb.ObjectRef{Name: workerName}, Uid: worker.GetMetadata().GetUid(), Version: worker.GetMetadata().GetVersion()}); status.Code(err) != codes.FailedPrecondition {
 		t.Fatalf("unsettled run allowed drain: %v", err)
+	}
+}
+
+// Real PG leases, actor CAS, worker admission and lifecycle publication with
+// only the native/Kubernetes external boundaries faked. Rebuild the production
+// service before reconciliation; no in-memory producer ACK survives.
+func TestWorkerProtection_TerminalReceiptRecovery(t *testing.T) {
+	for _, operation := range []string{"run", "restore", "checkpoint-local", "checkpoint-external", "upload-local", "terminate"} {
+		t.Run(operation, func(t *testing.T) {
+			ns := namespaceForTest("ns-receipt-" + operation)
+			tc := setupTestWithWrappedStore(t, ns, nil, nil, func(s *controlapi.RPCService) {
+				kube, err := kubernetes.NewForConfig(cfg)
+				if err != nil {
+					t.Fatal(err)
+				}
+				s.EnableWorkerProtection(kube)
+			})
+			defer tc.cleanup()
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			createTemplate(t, tc, ns)
+			workerName := createWorkerPod(t, tc, ns, "worker", "node1", "pool1")
+			protectLifecyclePod(t, tc, ctx, ns, "worker", true)
+			ref := &ateapipb.ObjectRef{Atespace: testAtespace, Name: "recover"}
+			if _, err := tc.client.CreateActor(ctx, &ateapipb.CreateActorRequest{Actor: &ateapipb.Actor{Metadata: &ateapipb.ResourceMetadata{Atespace: testAtespace, Name: ref.Name}, ActorTemplate: &ateapipb.ObjectRef{Atespace: testAtespace, Name: "tmpl1"}}}); err != nil {
+				t.Fatal(err)
+			}
+			if operation != "run" {
+				if _, err := tc.client.ResumeActor(ctx, &ateapipb.ResumeActorRequest{Actor: ref}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if operation == "restore" || operation == "upload-local" {
+				if _, err := tc.client.PauseActor(ctx, &ateapipb.PauseActorRequest{Actor: ref}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			action := func(s *controlapi.RPCService) error {
+				switch operation {
+				case "run", "restore":
+					_, err := s.ResumeActor(ctx, &ateapipb.ResumeActorRequest{Actor: ref})
+					return err
+				case "checkpoint-local":
+					_, err := s.PauseActor(ctx, &ateapipb.PauseActorRequest{Actor: ref})
+					return err
+				case "checkpoint-external", "upload-local":
+					_, err := s.SuspendActor(ctx, &ateapipb.SuspendActorRequest{Actor: ref})
+					return err
+				case "terminate":
+					_, err := s.DeleteActor(ctx, &ateapipb.DeleteActorRequest{Actor: ref, AnyState: true})
+					return err
+				}
+				return nil
+			}
+			tc.fakeAtelet.Lock.Lock()
+			before := tc.fakeAtelet.OperationExecutions
+			tc.fakeAtelet.LoseOperationACK = true
+			tc.fakeAtelet.FailOperationLookup = true
+			tc.fakeAtelet.Lock.Unlock()
+			if err := action(tc.service); err == nil {
+				t.Fatal("lost ACK and lookup outage reported success")
+			}
+			pending, err := tc.client.GetActor(ctx, &ateapipb.GetActorRequest{Actor: ref})
+			if err != nil || pending.GetStatus().GetPendingNativeOperation().GetOperation() != operation || len(pending.GetStatus().GetPendingNativeOperation().GetInvocation()) == 0 {
+				t.Fatalf("exact invocation lost: %v %v", pending, err)
+			}
+			worker, err := tc.client.GetWorker(ctx, &ateapipb.GetWorkerRequest{Worker: &ateapipb.ObjectRef{Name: workerName}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := tc.client.DrainEmptyWorker(ctx, &ateapipb.DrainEmptyWorkerRequest{Worker: &ateapipb.ObjectRef{Name: workerName}, Uid: worker.GetMetadata().GetUid(), Version: worker.GetMetadata().GetVersion()}); status.Code(err) != codes.FailedPrecondition {
+				t.Fatalf("owned operation allowed drain: %v", err)
+			}
+			restarted := tc.rebuildService()
+			if err := action(restarted); err == nil {
+				t.Fatal("lookup outage invented completion")
+			}
+			tc.fakeAtelet.Lock.Lock()
+			tc.fakeAtelet.FailOperationLookup = false
+			tc.fakeAtelet.Lock.Unlock()
+			if err := action(restarted); err != nil {
+				t.Fatalf("terminal receipt did not recover %s: %v", operation, err)
+			}
+			tc.fakeAtelet.Lock.Lock()
+			executions := tc.fakeAtelet.OperationExecutions
+			tc.fakeAtelet.Lock.Unlock()
+			if executions != before+1 {
+				t.Fatalf("native replayed: executions %d before %d", executions, before)
+			}
+			after, err := tc.client.GetActor(ctx, &ateapipb.GetActorRequest{Actor: ref})
+			if operation == "terminate" {
+				if status.Code(err) != codes.NotFound {
+					t.Fatalf("delete not settled: %v", err)
+				}
+				return
+			}
+			if err != nil || after.GetStatus().GetPendingNativeOperation() != nil {
+				t.Fatalf("publication did not settle: %v %v", after, err)
+			}
+			expected := ateapipb.ActorState_ACTOR_STATE_SUSPENDED
+			if operation == "run" || operation == "restore" {
+				expected = ateapipb.ActorState_ACTOR_STATE_RUNNING
+			}
+			if operation == "checkpoint-local" {
+				expected = ateapipb.ActorState_ACTOR_STATE_PAUSED
+			}
+			if after.GetStatus().GetState() != expected {
+				t.Fatalf("wrong publication: %v", after)
+			}
+		})
 	}
 }

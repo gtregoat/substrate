@@ -16,6 +16,8 @@ package functionaltest
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"log"
 	"net"
@@ -29,6 +31,8 @@ import (
 	"github.com/agent-substrate/substrate/internal/proto/ateletpb"
 	"github.com/agent-substrate/substrate/internal/testenv"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 	corev1 "k8s.io/api/core/v1"
 	storagev1 "k8s.io/api/storage/v1"
@@ -109,7 +113,12 @@ func TestMain(m *testing.M) {
 type FakeAteletServer struct {
 	ateletpb.UnimplementedAteomHerderServer
 
-	Lock sync.Mutex
+	Lock                sync.Mutex
+	operationRequests   map[string][]byte
+	operationResults    map[string]*ateletpb.OperationResult
+	LoseOperationACK    bool
+	FailOperationLookup bool
+	OperationExecutions int
 
 	RunCalled  bool
 	RunRequest *ateletpb.RunRequest
@@ -170,6 +179,11 @@ func (f *FakeAteletServer) Reset() {
 	f.Lock.Lock()
 	defer f.Lock.Unlock()
 
+	f.operationRequests = nil
+	f.operationResults = nil
+	f.LoseOperationACK = false
+	f.FailOperationLookup = false
+	f.OperationExecutions = 0
 	f.RunCalled = false
 	f.RunRequest = nil
 	f.FailRun = nil
@@ -298,4 +312,76 @@ func (f *FakeAteletServer) lastRestoreRequest() *ateletpb.RestoreRequest {
 		return nil
 	}
 	return proto.Clone(f.RestoreRequest).(*ateletpb.RestoreRequest)
+}
+
+// External native boundary fake for the real PG/workflow composition. Native
+// durability and actual sandbox/object-store composition are tested in atelet.
+func (f *FakeAteletServer) ExecuteOperation(ctx context.Context, req *ateletpb.ExecuteOperationRequest) (*ateletpb.OperationResult, error) {
+	b, err := (proto.MarshalOptions{Deterministic: true}).Marshal(req)
+	if err != nil {
+		return nil, err
+	}
+	h := sha256.Sum256(b)
+	f.Lock.Lock()
+	if f.operationRequests == nil {
+		f.operationRequests = map[string][]byte{}
+		f.operationResults = map[string]*ateletpb.OperationResult{}
+	}
+	if previous, ok := f.operationRequests[req.OperationId]; ok {
+		if string(previous) != string(b) {
+			f.Lock.Unlock()
+			return nil, status.Error(codes.FailedPrecondition, "changed native invocation")
+		}
+		r := proto.CloneOf(f.operationResults[req.OperationId])
+		f.Lock.Unlock()
+		return r, nil
+	}
+	f.operationRequests[req.OperationId] = b
+	f.operationResults[req.OperationId] = &ateletpb.OperationResult{OperationId: req.OperationId, RequestSha256: hex.EncodeToString(h[:]), State: ateletpb.OperationState_OPERATION_STATE_UNRESOLVED}
+	f.OperationExecutions++
+	f.Lock.Unlock()
+	switch r := req.Request.(type) {
+	case *ateletpb.ExecuteOperationRequest_Run:
+		_, err = f.Run(ctx, r.Run)
+	case *ateletpb.ExecuteOperationRequest_Restore:
+		_, err = f.Restore(ctx, r.Restore)
+	case *ateletpb.ExecuteOperationRequest_Checkpoint:
+		_, err = f.Checkpoint(ctx, r.Checkpoint)
+	case *ateletpb.ExecuteOperationRequest_Upload:
+		_, err = f.UploadPausedCheckpoint(ctx, r.Upload)
+	case *ateletpb.ExecuteOperationRequest_Terminate:
+		_, err = f.Terminate(ctx, r.Terminate)
+	default:
+		err = status.Error(codes.InvalidArgument, "no operation")
+	}
+	if err != nil {
+		return nil, err
+	}
+	f.Lock.Lock()
+	defer f.Lock.Unlock()
+	f.operationResults[req.OperationId].State = ateletpb.OperationState_OPERATION_STATE_SUCCEEDED
+	if f.LoseOperationACK {
+		f.LoseOperationACK = false
+		return nil, status.Error(codes.Unavailable, "terminal native ACK lost")
+	}
+	return proto.CloneOf(f.operationResults[req.OperationId]), nil
+}
+func (f *FakeAteletServer) GetOperation(ctx context.Context, req *ateletpb.GetOperationRequest) (*ateletpb.OperationResult, error) {
+	f.Lock.Lock()
+	defer f.Lock.Unlock()
+	if f.FailOperationLookup {
+		return nil, status.Error(codes.Unavailable, "native receipt lookup unavailable")
+	}
+	b, err := (proto.MarshalOptions{Deterministic: true}).Marshal(req.GetOperation())
+	if err != nil {
+		return nil, err
+	}
+	previous, ok := f.operationRequests[req.GetOperation().GetOperationId()]
+	if !ok {
+		return &ateletpb.OperationResult{State: ateletpb.OperationState_OPERATION_STATE_MISSING}, nil
+	}
+	if string(previous) != string(b) {
+		return nil, status.Error(codes.FailedPrecondition, "changed native identity")
+	}
+	return proto.CloneOf(f.operationResults[req.Operation.OperationId]), nil
 }

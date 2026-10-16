@@ -81,6 +81,7 @@ var (
 
 type testContext struct {
 	service             *controlapi.RPCService
+	rebuildService      func() *controlapi.RPCService
 	client              ateapipb.ControlClient
 	k8sClient           kubernetes.Interface
 	substrateClient     versioned.Interface
@@ -219,26 +220,31 @@ func setupTestWithWrappedStore(t *testing.T, ns string, plugins map[string]volum
 
 	objectStore := objectstoretest.New()
 
-	service := controlapi.NewRPCService(
-		persistence,
-		wc,
-		sandboxConfigLister,
-		csiDriverConfigLister,
-		scLister,
-		dialer,
-		instruments,
-		"",
-		30*time.Second,
-		volPlugins,
-		objectStore,
-		"https://nonexistent-issuer.example",
-		actorJWTAuthorityPool,
-		actorCAPool,
-	)
+	buildService := func() *controlapi.RPCService {
+		service := controlapi.NewRPCService(
+			persistence,
+			wc,
+			sandboxConfigLister,
+			csiDriverConfigLister,
+			scLister,
+			dialer,
+			instruments,
+			"",
+			30*time.Second,
+			volPlugins,
+			objectStore,
+			"https://nonexistent-issuer.example",
+			actorJWTAuthorityPool,
+			actorCAPool,
+		)
 
-	for _, apply := range configure {
-		apply(service)
+		for _, apply := range configure {
+			apply(service)
+		}
+
+		return service
 	}
+	service := buildService()
 
 	// 5. Start REAL gRPC Server for ATE API
 	grpcServer := grpc.NewServer(grpc.ChainUnaryInterceptor(
@@ -307,6 +313,7 @@ func setupTestWithWrappedStore(t *testing.T, ns string, plugins map[string]volum
 
 	return &testContext{
 		service:             service,
+		rebuildService:      buildService,
 		client:              client,
 		k8sClient:           k8sClient,
 		substrateClient:     substrateClient,

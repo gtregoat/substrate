@@ -80,7 +80,9 @@ func (w *ActorWorkflow) SuspendActor(ctx context.Context, actorRef resources.Act
 		return nil, err
 	}
 	actor = marked
-	if fromPaused {
+	if actor.GetStatus().GetPendingNativeOperation() != nil {
+		err = w.reconcileNative(leaseCtx, actor, "checkpoint-external", "upload-local")
+	} else if fromPaused {
 		wireSnapshotScope, err = w.ensurePausedSnapshotUploaded(leaseCtx, actorRef, actor, actorTemplate)
 	} else {
 		wireSnapshotScope, err = w.ensureAteletSuspended(leaseCtx, actorRef, actor, actorTemplate)
@@ -255,7 +257,10 @@ func (w *ActorWorkflow) ensureAteletSuspended(ctx context.Context, actorRef reso
 		return wireSnapshotScope, err
 	}
 
-	if _, err = client.Checkpoint(ctx, req); err != nil {
+	if err = w.invokeNative(ctx, client, actor, req); err != nil {
+		if len(actor.GetStatus().GetPendingNativeOperation().GetInvocation()) != 0 {
+			return wireSnapshotScope, err
+		}
 		slog.LogAttrs(ctx, slog.LevelError, "Setting Actor to crashed due to error",
 			append(ateattr.ActorRefLogAttrs(actorRef), slog.Any("err", err))...)
 		if cerr := crashActor(ctx, w.store, actorRef, ateattr.OperationSuspend, ateletCrashMessage("Checkpoint", err)); cerr != nil {
@@ -313,7 +318,10 @@ func (w *ActorWorkflow) ensurePausedSnapshotUploaded(ctx context.Context, actorR
 		return wireSnapshotScope, err
 	}
 
-	if _, err = client.UploadPausedCheckpoint(ctx, req); err != nil {
+	if err = w.invokeNative(ctx, client, actor, req); err != nil {
+		if len(actor.GetStatus().GetPendingNativeOperation().GetInvocation()) != 0 {
+			return wireSnapshotScope, err
+		}
 		slog.LogAttrs(ctx, slog.LevelError, "Setting Actor to crashed due to error",
 			append(ateattr.ActorRefLogAttrs(actorRef), slog.Any("err", err))...)
 		if cerr := crashActor(ctx, w.store, actorRef, ateattr.OperationSuspend, ateletCrashMessage("UploadPausedCheckpoint", err)); cerr != nil {
@@ -380,6 +388,13 @@ func (w *ActorWorkflow) ensureSuspendedFinalized(ctx context.Context, actorRef r
 	if err != nil {
 		return nil, err
 	}
+	if len(latestActor.GetStatus().GetPendingNativeOperation().GetInvocation()) != 0 {
+		if err = w.reconcileNative(ctx, latestActor, "checkpoint-external", "upload-local"); err != nil {
+			return nil, err
+		}
+	}
+	settledOrigin := proto.CloneOf(latestActor.GetStatus().GetPendingNativeOperation())
+	settledUID := latestActor.GetMetadata().GetUid()
 
 	// 1. Free the worker (if it hasn't been freed yet)
 	if latestActor.GetStatus().GetWorkerAssignment() != nil {
@@ -399,6 +414,9 @@ func (w *ActorWorkflow) ensureSuspendedFinalized(ctx context.Context, actorRef r
 		}
 	}
 
+	if latestActor.GetMetadata().GetUid() != settledUID || !proto.Equal(settledOrigin, latestActor.GetStatus().GetPendingNativeOperation()) {
+		return nil, status.Error(codes.Aborted, "native publication identity changed")
+	}
 	if pending := latestActor.GetStatus().GetPendingNativeOperation(); pending != nil && pending.GetOperation() != "checkpoint-external" && pending.GetOperation() != "upload-local" {
 		return nil, status.Error(codes.FailedPrecondition, "suspend cannot settle another native operation")
 	}
