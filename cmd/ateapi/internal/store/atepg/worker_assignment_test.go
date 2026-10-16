@@ -117,7 +117,10 @@ func TestDrainEmptyWorker_BindingOrders(t *testing.T) {
 			p := setupPostgresPersistence(t)
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
-			worker, err := p.CreateWorker(ctx, &ateapipb.Worker{Metadata: &ateapipb.ResourceMetadata{Name: "empty-drain"}, Status: &ateapipb.WorkerStatus{State: ateapipb.WorkerState_WORKER_STATE_ACTIVE, Capacity: &ateapipb.WorkerResources{Actors: 2}}})
+			candidate := ownershipTestWorker()
+			candidate.Metadata.Name = "empty-drain"
+			candidate.Status.Capacity = &ateapipb.WorkerResources{Actors: 2}
+			worker, err := p.CreateWorker(ctx, candidate)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -218,6 +221,12 @@ func TestDrainEmptyWorker_BindingOrders(t *testing.T) {
 				}
 			} else if !errors.Is(err, store.ErrNotFound) || got.GetStatus().GetAllocated() != nil {
 				t.Fatalf("drained worker bound: %v, %v", bound, err)
+			}
+			proof, proofErr := p.ProveEmptyDraining(ctx, got)
+			if assignmentFirst {
+				requireOwnershipRefusal(t, proof, proofErr, store.OwnershipNotDraining)
+			} else {
+				requireOwnershipProof(t, proof, proofErr, got)
 			}
 		})
 	}

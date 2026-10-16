@@ -93,6 +93,15 @@ func (p *Persistence) UpdateActor(ctx context.Context, actorRef resources.ActorR
 		return nil, fmt.Errorf("getting actor %s/%s for update: %w", atespace, name, err)
 	}
 
+	// Public reads intentionally discard unknown fields. Never let a lifecycle
+	// update silently erase a pending operation's newer ownership information.
+	withUnknown := &ateapipb.Actor{}
+	if err := proto.Unmarshal(currentBytes, withUnknown); err != nil {
+		return nil, fmt.Errorf("decoding actor operation ownership: %w", err)
+	}
+	if pending := withUnknown.GetStatus().GetPendingNativeSnapshot(); pending != nil && ownershipUnknown(pending.ProtoReflect()) {
+		return nil, ownershipRefusal(store.OwnershipUnknown)
+	}
 	dbActor := &ateapipb.Actor{}
 	if err := unmarshalStored(currentBytes, dbActor); err != nil {
 		return nil, fmt.Errorf("unmarshaling actor for update: %w", err)
