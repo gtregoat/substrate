@@ -182,25 +182,31 @@ deletion, terminal phase or missing readiness refuse. Required metadata is
 fields nor treats cached registration or an asserted boolean as proof. Candidate
 selection is advisory; the locked check is authoritative.
 
-This composes with the consumer's existing release protocol, not arbitrary
-metadata mutation: only exact-incarnation DRAINING plus the final ownership
-proof may permit protection removal. If bind wins the worker lock, its committed
-assignment blocks drain/proof. If drain wins, the one-way state rejects admission.
-A retained retry reservation also blocks empty proof. Out-of-band protection
-removal is not authorized by this capability.
+The PostgreSQL worker lock does not lock Kubernetes metadata. A live GET can
+observe protection that the consumer subsequently removes while the worker is
+still ACTIVE. In particular, consumer `6c938cbe`'s default-off path can strip
+PodUID-owned or legacy protection. Its template-retention change is insufficient.
+The queued consumer correction `job8f1bc30d` must retain protection for existing
+exact Pods while ACTIVE, busy or unknown, even with mutation disabled. Producer
+admission alone does not close that race. No global retirement protocol is added.
 
 Safe rollout order (owner delivery requirements, not local test completion):
 
-1. Deploy the admission capability with cleanup disabled, then enable enforcement
-   on all serving replicas through the authorized delivery process.
-2. Verify every creation template supplies all protection inputs before admission.
-3. Protect existing Pods using exact namespace/name/UID identities, retaining
-   protection for ACTIVE, unknown and terminal/local-data dependencies.
-4. Verify actual eligibility: unprotected old/new Pods refuse without losing
-   reservations, and the same protected exact Pods and independent siblings admit.
-5. Only then independently authorize consumer cleanup after its node-safety,
-   cooldown, identity and final-proof checks are verified. No live flag, mutation,
-   rollout or cleanup authorization follows from this source implementation.
+1. Keep producer enforcement and consumer enforcement/cleanup disabled. Deploy
+   the admission capability without activating it.
+2. Deploy and verify the consumer retention correction, including existing
+   PodUID-owned and legacy Pods with ACTIVE native workers in default-off mode.
+   Verify terminal/local-data node retention through the node-safety boundary.
+3. Verify every creation template supplies protection before eligibility, then
+   protect existing Pods by exact namespace/name/UID, retaining ACTIVE, unknown
+   and terminal/local-data dependencies.
+4. Only after retention is established, independently authorize producer
+   enforcement on every API replica. Verify old/new unprotected Pods refuse
+   without losing reservations and protected exact Pods and siblings admit.
+5. Independently authorize consumer drain/cleanup only after its exact identity,
+   cooldown, final proof, warm capacity and pending-demand checks pass. Bind and
+   drain serialize on the worker row; a retained reservation blocks empty proof.
+   No live flag, mutation or cleanup authorization follows from this source.
 
 Execution of new PG/race tests, controller checks, Helm rendering and all original
 checks remains required. Source coverage is not evidence that these ran. Truly

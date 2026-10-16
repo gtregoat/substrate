@@ -118,7 +118,7 @@ func setupTestWithVolumePlugins(t *testing.T, ns string, plugins map[string]volu
 
 // Wrappers add barriers around production persistence calls; they never
 // implement assignment, lifecycle, or proof decisions themselves.
-func setupTestWithWrappedStore(t *testing.T, ns string, plugins map[string]volume.VolumePluginControlPlane, wrap func(store.Interface) store.Interface) *testContext {
+func setupTestWithWrappedStore(t *testing.T, ns string, plugins map[string]volume.VolumePluginControlPlane, wrap func(store.Interface) store.Interface, configure ...func(*controlapi.RPCService)) *testContext {
 	t.Helper()
 	// 1. Start an isolated PostgreSQL-backed store.
 	persistence, cleanupStore := storetest.SetupTestStore(t)
@@ -235,6 +235,10 @@ func setupTestWithWrappedStore(t *testing.T, ns string, plugins map[string]volum
 		actorJWTAuthorityPool,
 		actorCAPool,
 	)
+
+	for _, apply := range configure {
+		apply(service)
+	}
 
 	// 5. Start REAL gRPC Server for ATE API
 	grpcServer := grpc.NewServer(grpc.ChainUnaryInterceptor(
@@ -631,6 +635,7 @@ func createWorkerPod(t *testing.T, tc *testContext, ns string, name string, node
 	if err != nil {
 		t.Fatalf("failed to create worker pod: %v", err)
 	}
+	createdPod.Status.PodIP = "127.0.0.1"
 	createdPod.Status.PodIPs = []corev1.PodIP{{IP: "127.0.0.1"}}
 	createdPod.Status.Phase = corev1.PodRunning
 	createdPod.Status.Conditions = []corev1.PodCondition{{

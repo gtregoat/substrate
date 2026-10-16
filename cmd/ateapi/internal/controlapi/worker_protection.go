@@ -50,6 +50,8 @@ type workerProtection struct {
 // consumer may remove protection only after the exact worker is DRAINING and
 // its ownership proof succeeds; DRAINING is one-way and excludes new claims.
 // Resume retries retain their existing reservation, which itself blocks proof.
+// This lock does not cover Pod metadata: consumer retention must be deployed
+// before enforcement; see docs/api/prove-empty-draining.md.
 func (g *workerProtection) verify(ctx context.Context, worker *ateapipb.Worker) error {
 	if g == nil {
 		return nil
