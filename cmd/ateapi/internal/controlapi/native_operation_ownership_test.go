@@ -105,13 +105,13 @@ func TestAcknowledgedTerminationRetainsExactOrigin(t *testing.T) {
 	worker.Metadata.Uid = "settled-worker"
 	assignment := workerAssignmentFrom(worker)
 	actor := &ateapipb.Actor{Status: &ateapipb.ActorStatus{
-		State: ateapipb.ActorState_ACTOR_STATE_DELETING,
+		State:            ateapipb.ActorState_ACTOR_STATE_DELETING,
 		WorkerAssignment: proto.CloneOf(assignment),
 		PendingNativeOperation: &ateapipb.NativeOperationOwnership{
-			Operation: terminatedAcknowledged,
+			Operation:     terminatedAcknowledged,
 			RequestDigest: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-			SourceWorker: worker,
-			Assignment: assignment,
+			SourceWorker:  worker,
+			Assignment:    assignment,
 		},
 	}}
 	if err := requireSettledNativeOperation(actor); err != nil {
