@@ -214,6 +214,9 @@ message LocalSnapshot {
   // +k8s:minimum=1
   // +k8s:maximum=2 # keep this in sync with the SnapshotContentScope enum
   SnapshotContentScope content_scope = 3;
+  // Exact native source retained for a later operation-scoped upload.
+  // +k8s:optional
+  Worker source_worker = 4;
 }
 
 enum SnapshotContentScope {
@@ -645,6 +648,10 @@ message NativeOperationOwnership {
   // +k8s:optional
   // +k8s:maxLength=64
   string request_digest = 7;
+  // Serialized atelet ExecuteOperationRequest. Contains its once-minted token,
+  // exact request and target incarnation; committed before dispatch.
+  // +k8s:optional
+  bytes invocation = 8;
 }
 
 // ActorCrash describes the failure that moved an Actor to CRASHED.

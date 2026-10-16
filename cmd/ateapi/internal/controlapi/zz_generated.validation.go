@@ -5084,6 +5084,36 @@ func Validate_LocalSnapshot(
 		errs = append(errs, fn(fldPath.Child("content_scope"), &obj.ContentScope, oldVal, oldObj != nil)...)
 	}
 
+	{ // field ateapipb.LocalSnapshot.SourceWorker
+		fn := func(
+			fldPath *field.Path,
+			obj, oldObj *ateapipb.Worker,
+			oldValueCorrelated bool) (errs field.ErrorList) {
+			// don't revalidate unchanged data
+			if oldValueCorrelated && op.Type == operation.Update {
+				if ateDeepEqual(obj, oldObj) {
+					return nil
+				}
+			}
+			// call field-attached validations
+			earlyReturn := false
+			if e := validate.OptionalPointer(ctx, op, fldPath, obj, oldObj).MarkShortCircuit(); len(e) != 0 {
+				earlyReturn = true
+			}
+			if earlyReturn {
+				return // do not proceed
+			}
+			// call the type's validation function
+			errs = append(errs, Validate_Worker(ctx, op, fldPath, obj, oldObj)...)
+			return
+		}
+		oldVal := safe.Field(oldObj,
+			func(oldObj *ateapipb.LocalSnapshot) *ateapipb.Worker {
+				return oldObj.SourceWorker
+			})
+		errs = append(errs, fn(fldPath.Child("source_worker"), obj.SourceWorker, oldVal, oldObj != nil)...)
+	}
+
 	return errs
 }
 
@@ -5679,6 +5709,34 @@ func Validate_NativeOperationOwnership(
 				return &oldObj.RequestDigest
 			})
 		errs = append(errs, fn(fldPath.Child("request_digest"), &obj.RequestDigest, oldVal, oldObj != nil)...)
+	}
+
+	{ // field ateapipb.NativeOperationOwnership.Invocation
+		fn := func(
+			fldPath *field.Path,
+			obj, oldObj []byte,
+			oldValueCorrelated bool) (errs field.ErrorList) {
+			// don't revalidate unchanged data
+			if oldValueCorrelated && op.Type == operation.Update {
+				if ateDeepEqual(obj, oldObj) {
+					return nil
+				}
+			}
+			// call field-attached validations
+			earlyReturn := false
+			if e := validate.OptionalSlice(ctx, op, fldPath, obj, oldObj).MarkShortCircuit(); len(e) != 0 {
+				earlyReturn = true
+			}
+			if earlyReturn {
+				return // do not proceed
+			}
+			return
+		}
+		oldVal := safe.Field(oldObj,
+			func(oldObj *ateapipb.NativeOperationOwnership) []byte {
+				return oldObj.Invocation
+			})
+		errs = append(errs, fn(fldPath.Child("invocation"), obj.Invocation, oldVal, oldObj != nil)...)
 	}
 
 	return errs

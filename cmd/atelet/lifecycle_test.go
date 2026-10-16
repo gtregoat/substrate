@@ -118,7 +118,12 @@ func serveFakeAteom(t *testing.T, f *fakeAteom) {
 // TestLocalSnapshotGC walks an actor through
 // run -> pause -> resume -> terminate over atelet's RPC surface and ensures that
 // the local snapshot is garbage collected after the actor is terminated.
-func TestLocalSnapshotGC(t *testing.T) {
+func TestLocalSnapshotGC(t *testing.T)         { testLocalSnapshotGC(t, 0) }
+func TestNativeReceiptsLifecycle(t *testing.T) { testLocalSnapshotGC(t, 1) }
+
+func TestNativeEffectBeforeTerminalReceipt(t *testing.T) { testLocalSnapshotGC(t, 2) }
+
+func testLocalSnapshotGC(t *testing.T, receipts int) {
 	useTempNodeDirs(t)
 	ctx := t.Context()
 
@@ -158,11 +163,18 @@ func TestLocalSnapshotGC(t *testing.T) {
 			}},
 		},
 	}
+	var client lifecycleDriver = s
+	var receiptDriver *receiptLifecycleDriver
+	if receipts != 0 {
+		receiptDriver = newReceiptLifecycleDriver(t, s)
+		receiptDriver.failTerminationReceipt = receipts == 2
+		client = receiptDriver
+	}
 	spec := &ateletpb.WorkloadSpec{
 		Containers: []*ateletpb.Container{{Name: "app", Image: image, Command: []string{"/bin/app"}}},
 	}
 
-	if _, err := s.Run(ctx, &ateletpb.RunRequest{
+	if _, err := client.Run(ctx, &ateletpb.RunRequest{
 		Atespace:              atespace,
 		ActorName:             actorName,
 		ActorUid:              actorUID,
@@ -176,7 +188,7 @@ func TestLocalSnapshotGC(t *testing.T) {
 	}
 
 	// Pause: a local checkpoint, which leaves the snapshot on this node.
-	if _, err := s.Checkpoint(ctx, &ateletpb.CheckpointRequest{
+	if _, err := client.Checkpoint(ctx, &ateletpb.CheckpointRequest{
 		Atespace:              atespace,
 		ActorName:             actorName,
 		ActorUid:              actorUID,
@@ -198,7 +210,7 @@ func TestLocalSnapshotGC(t *testing.T) {
 	}
 
 	// Resume: restores from that local snapshot.
-	if _, err := s.Restore(ctx, &ateletpb.RestoreRequest{
+	if _, err := client.Restore(ctx, &ateletpb.RestoreRequest{
 		Atespace:              atespace,
 		ActorName:             actorName,
 		ActorUid:              actorUID,
@@ -220,7 +232,7 @@ func TestLocalSnapshotGC(t *testing.T) {
 	}
 
 	// Terminate: the actor is gone, and so should its snapshot be.
-	if _, err := s.Terminate(ctx, &ateletpb.TerminateRequest{
+	if _, err := client.Terminate(ctx, &ateletpb.TerminateRequest{
 		Atespace:              atespace,
 		ActorName:             actorName,
 		ActorUid:              actorUID,
@@ -249,6 +261,9 @@ func TestLocalSnapshotGC(t *testing.T) {
 		t.Errorf("actor dir %s survived terminate with %d entries: %v", actorDir, len(left), left)
 	} else if !os.IsNotExist(err) {
 		t.Errorf("reading actor dir %s: %v", actorDir, err)
+	}
+	if receiptDriver != nil {
+		receiptDriver.checkRecovery(t, s)
 	}
 }
 

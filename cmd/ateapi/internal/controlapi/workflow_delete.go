@@ -50,6 +50,18 @@ func (w *ActorWorkflow) DeleteActor(ctx context.Context, actorRef resources.Acto
 		return nil, status.Error(codes.Aborted, "concurrent update conflict, please retry")
 	}
 
+	if actor.GetStatus().GetPendingNativeOperation().GetOperation() == "terminate" {
+		if err = w.reconcileNative(ctx, actor, "terminate"); err != nil {
+			return nil, err
+		}
+		if err = w.settleNativeTermination(ctx, actorRef, actor); err != nil {
+			return nil, err
+		}
+		actor, err = w.store.GetActor(ctx, actorRef)
+		if err != nil {
+			return nil, err
+		}
+	}
 	if err := requireSettledNativeOperation(actor); err != nil {
 		return nil, err
 	}
@@ -227,7 +239,7 @@ func (w *ActorWorkflow) ensureAteletTerminated(ctx context.Context, actorRef res
 	if err != nil {
 		return err
 	}
-	if _, err := client.Terminate(ctx, req); err != nil {
+	if err := w.invokeNative(ctx, client, actor, req); err != nil {
 		if status.Code(err) == codes.NotFound {
 			slog.InfoContext(ctx, "workload already terminated on atelet", slog.Any("actor", actorRef))
 			return status.Error(codes.FailedPrecondition, "native termination not found; completion remains unknown")
