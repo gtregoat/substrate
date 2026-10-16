@@ -95,6 +95,11 @@ message MintActorCertificateResponse {
 // Called by ate-api-server over cluster networking.  ate-api-server
 // authenticates with its k8s pod identity mTLS certificate.
 service AteomHerder {
+  // Execute an exactly identified operation. Legacy methods remain unchanged.
+  rpc ExecuteOperation(ExecuteOperationRequest) returns (OperationResult) {}
+  // Lookup never dispatches or infers success from missing local data.
+  rpc GetOperation(GetOperationRequest) returns (OperationResult) {}
+
   // Run tells atelet to create a new containerized workload from scratch on an
   // ateom.
   rpc Run(RunRequest) returns (RunResponse) {}
@@ -486,4 +491,40 @@ message RestoreRequest {
 }
 
 message RestoreResponse {
+}
+
+// The producer must persist this complete request before dispatch. Tokens are
+// never reusable, even after success. Worker UID and Pod UID are distinct.
+message ExecuteOperationRequest {
+  string operation_id = 1;
+  string worker_uid = 2;
+  string worker_pod_uid = 3;
+  oneof request {
+    RunRequest run = 4;
+    RestoreRequest restore = 5;
+    CheckpointRequest checkpoint = 6;
+    UploadPausedCheckpointRequest upload = 7;
+    TerminateRequest terminate = 8;
+  }
+}
+
+message GetOperationRequest {
+  // Exact complete original request, including its operation identity.
+  ExecuteOperationRequest operation = 1;
+}
+
+enum OperationState {
+  OPERATION_STATE_UNSPECIFIED = 0;
+  // No receipt exists. This is not permission to replay a legacy call.
+  OPERATION_STATE_MISSING = 1;
+  // Accepted; effects may still be in progress or interrupted. Never success.
+  OPERATION_STATE_UNRESOLVED = 2;
+  // All production phases and required local cleanup returned success.
+  OPERATION_STATE_SUCCEEDED = 3;
+}
+
+message OperationResult {
+  string operation_id = 1;
+  string request_sha256 = 2;
+  OperationState state = 3;
 }
