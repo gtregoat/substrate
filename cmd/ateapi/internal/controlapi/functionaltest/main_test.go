@@ -134,6 +134,7 @@ type FakeAteletServer struct {
 	FailUpload    error
 	BeforeUpload  func(context.Context, *ateletpb.UploadPausedCheckpointRequest) error
 
+	TerminateCalls   int
 	TerminateCalled  bool
 	TerminateRequest *ateletpb.TerminateRequest
 	FailTerminate    error
@@ -279,6 +280,7 @@ func (f *FakeAteletServer) Terminate(ctx context.Context, req *ateletpb.Terminat
 	f.Lock.Lock()
 	defer f.Lock.Unlock()
 
+	f.TerminateCalls++
 	f.TerminateCalled = true
 	f.TerminateRequest = proto.Clone(req).(*ateletpb.TerminateRequest)
 	if f.FailTerminate != nil {
