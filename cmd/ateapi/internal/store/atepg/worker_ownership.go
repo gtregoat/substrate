@@ -28,6 +28,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
+	"k8s.io/apimachinery/pkg/util/validation"
 )
 
 func ownershipRefusal(reason string) error { return &store.OwnershipRefusal{Reason: reason} }
@@ -77,7 +78,7 @@ func (p *Persistence) ProveEmptyDraining(ctx context.Context, expected *ateapipb
 	if _, err := uuid.Parse(guard.UID); err != nil {
 		return nil, store.ErrPreconditionRequired
 	}
-	if expected.GetMetadata().GetName() == "" || expected.GetMetadata().GetAtespace() != "" || expected.GetWorkerNamespace() == "" || expected.GetWorkerPool() == "" || expected.GetWorkerPod() == "" || expected.GetNodeName() == "" || expected.GetIp() == "" || ownershipUnknown(expected.ProtoReflect()) {
+	if expected.GetMetadata().GetName() == "" || expected.GetMetadata().GetAtespace() != "" || expected.GetWorkerNamespace() == "" || expected.GetWorkerPool() == "" || expected.GetWorkerPod() == "" || expected.GetNodeName() == "" || net.ParseIP(expected.GetIp()) == nil || len(validation.IsDNS1123Label(expected.GetWorkerNamespace())) != 0 || len(validation.IsDNS1123Subdomain(expected.GetWorkerPool())) != 0 || len(validation.IsDNS1123Subdomain(expected.GetWorkerPod())) != 0 || len(validation.IsDNS1123Subdomain(expected.GetNodeName())) != 0 || ownershipUnknown(expected.ProtoReflect()) {
 		return nil, ownershipRefusal(store.OwnershipUnknown)
 	}
 	if _, err := uuid.Parse(expected.GetWorkerPodUid()); err != nil {
@@ -102,7 +103,7 @@ func (p *Persistence) ProveEmptyDraining(ctx context.Context, expected *ateapipb
 	if proto.Unmarshal(data, worker) != nil {
 		return nil, ownershipRefusal(store.OwnershipUnknown)
 	}
-	if validateProtoMetadataMatchesColumns("ownership worker", worker.GetMetadata(), uid, version) != nil || ownershipUnknown(worker.ProtoReflect()) {
+	if worker.GetMetadata().GetAtespace() != "" || validateProtoMetadataMatchesColumns("ownership worker", worker.GetMetadata(), uid, version) != nil || ownershipUnknown(worker.ProtoReflect()) {
 		return nil, ownershipRefusal(store.OwnershipUnknown)
 	}
 	if err := guard.Check(worker.GetMetadata()); err != nil {
@@ -148,6 +149,9 @@ func (p *Persistence) ProveEmptyDraining(ctx context.Context, expected *ateapipb
 		if err := rows.Scan(&space, &name, &uid, &version, &data, &liveData, &liveName, &liveUID, &liveVersion, &claimData); err != nil {
 			return nil, err
 		}
+		if _, err := uuid.Parse(uid); err != nil || version < 1 || len(validation.IsDNS1123Label(space)) != 0 || len(validation.IsDNS1123Label(name)) != 0 {
+			return nil, ownershipRefusal(store.OwnershipUnknown)
+		}
 		actor := &ateapipb.Actor{}
 		if proto.Unmarshal(data, actor) != nil || ownershipUnknown(actor.ProtoReflect()) || validateProtoMetadataMatchesColumns("ownership actor", actor.GetMetadata(), uid, version) != nil || actor.GetMetadata().GetAtespace() != space || actor.GetMetadata().GetName() != name {
 			return nil, ownershipRefusal(store.OwnershipUnknown)
@@ -189,12 +193,12 @@ func actorRetirementDependency(actor *ateapipb.Actor, worker, live *ateapipb.Wor
 	if s == nil || s.GetState() < ateapipb.ActorState(1) || s.GetState() > ateapipb.ActorState(9) {
 		return ownershipRefusal(store.OwnershipUnknown)
 	}
-	if err := nativeSnapshotDependency(actor, worker); err != nil {
+	if err := nativeOperationDependency(actor, worker); err != nil {
 		return err
 	}
 	relevant := false
 	if a := s.GetWorkerAssignment(); a != nil {
-		if a.GetWorker().GetName() == "" || a.GetNodeName() == "" {
+		if !qualifiedAssignmentCoordinates(a) {
 			return ownershipRefusal(store.OwnershipUnknown)
 		}
 		relevant = a.GetWorker().GetName() == worker.GetMetadata().GetName() || a.GetNodeName() == worker.GetNodeName()
@@ -212,11 +216,16 @@ func actorRetirementDependency(actor *ateapipb.Actor, worker, live *ateapipb.Wor
 		historical = true
 	}
 	if local := s.GetLocalSnapshot(); local != nil {
-		if local.GetSnapshotName() == "" || len(local.GetNodeVmsWithLocalSnapshots()) == 0 {
+		if len(validation.IsDNS1123Label(local.GetSnapshotName())) != 0 || len(local.GetNodeVmsWithLocalSnapshots()) == 0 {
 			return ownershipRefusal(store.OwnershipUnknown)
 		}
+		seen := make(map[string]bool)
 		for _, node := range local.GetNodeVmsWithLocalSnapshots() {
-			if node == "" {
+			if seen[node] {
+				return ownershipRefusal(store.OwnershipUnknown)
+			}
+			seen[node] = true
+			if len(validation.IsDNS1123Subdomain(node)) != 0 {
 				return ownershipRefusal(store.OwnershipUnknown)
 			}
 			if node == worker.GetNodeName() && !historical {
@@ -236,8 +245,11 @@ func actorRetirementDependency(actor *ateapipb.Actor, worker, live *ateapipb.Wor
 		}
 		return ownershipRefusal(store.OwnershipBusy)
 	}
+	if store.UnlocatedNativeFailure(s) {
+		return ownershipRefusal(store.OwnershipUnknown)
+	}
 	// Unlocated in-flight state cannot be attributed to an unrelated node.
-	if s.GetPendingNativeSnapshot() == nil && s.GetWorkerAssignment() == nil && (s.GetLocalSnapshot() == nil || s.GetState() != ateapipb.ActorState_ACTOR_STATE_SUSPENDING) && (s.GetInProgressSnapshotUri() != "" || s.GetInProgressLocalSnapshotName() != "") {
+	if s.GetPendingNativeOperation() == nil && s.GetWorkerAssignment() == nil && (s.GetLocalSnapshot() == nil || s.GetState() != ateapipb.ActorState_ACTOR_STATE_SUSPENDING) && (s.GetInProgressSnapshotUri() != "" || s.GetInProgressLocalSnapshotName() != "") {
 		return ownershipRefusal(store.OwnershipUnknown)
 	}
 	return nil
@@ -249,7 +261,7 @@ func actorRetirementDependency(actor *ateapipb.Actor, worker, live *ateapipb.Wor
 func qualifiedRunningAssignment(actor *ateapipb.Actor, live *ateapipb.Worker, claim *ateapipb.ActorAssignment) bool {
 	s := actor.GetStatus()
 	a := s.GetWorkerAssignment()
-	if a == nil || live == nil || claim == nil || s.GetPendingNativeSnapshot() != nil || s.GetInProgressSnapshotUri() != "" || s.GetInProgressLocalSnapshotName() != "" {
+	if a == nil || live == nil || claim == nil || s.GetPendingNativeOperation() != nil || s.GetInProgressSnapshotUri() != "" || s.GetInProgressLocalSnapshotName() != "" {
 		return false
 	}
 	if a.GetWorker().GetName() == "" || a.GetWorker().GetAtespace() != "" || a.GetWorkerNamespace() == "" || a.GetWorkerPool() == "" || a.GetWorkerPod() == "" || a.GetNodeName() == "" || net.ParseIP(a.GetWorkerPodIp()) == nil {
@@ -261,7 +273,7 @@ func qualifiedRunningAssignment(actor *ateapipb.Actor, live *ateapipb.Worker, cl
 	if _, err := uuid.Parse(live.GetMetadata().GetUid()); err != nil {
 		return false
 	}
-	if live.GetMetadata().GetVersion() < 1 || live.GetStatus().GetAllocated().GetActors() < 1 || (live.GetStatus().GetState() != ateapipb.WorkerState_WORKER_STATE_ACTIVE && live.GetStatus().GetState() != ateapipb.WorkerState_WORKER_STATE_DRAINING) {
+	if s.GetState() != ateapipb.ActorState_ACTOR_STATE_RUNNING || live.GetMetadata().GetAtespace() != "" || live.GetMetadata().GetVersion() < 1 || live.GetStatus().GetAllocated().GetActors() < 1 || (live.GetStatus().GetState() != ateapipb.WorkerState_WORKER_STATE_ACTIVE && live.GetStatus().GetState() != ateapipb.WorkerState_WORKER_STATE_DRAINING) {
 		return false
 	}
 	if claim.GetActorUid() == "" || claim.GetActorUid() != actor.GetMetadata().GetUid() || claim.GetActor().GetName() != actor.GetMetadata().GetName() || claim.GetActor().GetAtespace() != actor.GetMetadata().GetAtespace() {
@@ -282,21 +294,36 @@ func qualifiedRunningAssignment(actor *ateapipb.Actor, live *ateapipb.Worker, cl
 	return true
 }
 
-// nativeSnapshotDependency uses persisted dispatch provenance, including after
+// nativeOperationDependency uses persisted dispatch provenance, including after
 // crash releases the scheduling reservation. A URI alone is never settlement.
-func nativeSnapshotDependency(actor *ateapipb.Actor, target *ateapipb.Worker) error {
+func nativeOperationDependency(actor *ateapipb.Actor, target *ateapipb.Worker) error {
 	s := actor.GetStatus()
-	op := s.GetPendingNativeSnapshot()
+	op := s.GetPendingNativeOperation()
 	if op == nil {
 		return nil
+	}
+	state := s.GetState()
+	validState := state == ateapipb.ActorState_ACTOR_STATE_CRASHED ||
+		op.GetOperation() == "checkpoint-local" && state == ateapipb.ActorState_ACTOR_STATE_PAUSING ||
+		(op.GetOperation() == "checkpoint-external" || op.GetOperation() == "upload-local") && state == ateapipb.ActorState_ACTOR_STATE_SUSPENDING ||
+		(op.GetOperation() == "run" || op.GetOperation() == "restore") && state == ateapipb.ActorState_ACTOR_STATE_RESUMING ||
+		op.GetOperation() == "terminate" && (state == ateapipb.ActorState_ACTOR_STATE_DELETING || state == ateapipb.ActorState_ACTOR_STATE_REVERTING)
+	if !validState {
+		return ownershipRefusal(store.OwnershipUnknown)
+	}
+	if digest, err := hex.DecodeString(op.GetRequestDigest()); err != nil || len(digest) != sha256.Size {
+		return ownershipRefusal(store.OwnershipUnknown)
 	}
 	if op.GetLocalSnapshotName() != s.GetInProgressLocalSnapshotName() || op.GetSnapshotUri() != s.GetInProgressSnapshotUri() {
 		return ownershipRefusal(store.OwnershipUnknown)
 	}
 	switch op.GetOperation() {
-	case "checkpoint-local", "checkpoint-external":
+	case "checkpoint-local", "checkpoint-external", "run", "restore", "terminate":
 		source, a := op.GetSourceWorker(), op.GetAssignment()
-		if source == nil || a == nil || op.GetLocalSource() != nil || a.GetWorker().GetName() == "" || a.GetWorker().GetAtespace() != "" || source.GetMetadata().GetAtespace() != "" || source.GetMetadata().GetVersion() < 1 || source.GetWorkerNamespace() == "" || source.GetWorkerPool() == "" || source.GetWorkerPod() == "" || source.GetNodeName() == "" || net.ParseIP(source.GetIp()) == nil {
+		if source == nil || !qualifiedAssignmentCoordinates(a) || op.GetLocalSource() != nil || a.GetWorker().GetName() == "" || a.GetWorker().GetAtespace() != "" || source.GetMetadata().GetAtespace() != "" || source.GetMetadata().GetVersion() < 1 || source.GetWorkerNamespace() == "" || source.GetWorkerPool() == "" || source.GetWorkerPod() == "" || source.GetNodeName() == "" || net.ParseIP(source.GetIp()) == nil {
+			return ownershipRefusal(store.OwnershipUnknown)
+		}
+		if source.GetStatus().GetAllocated().GetActors() < 1 || (source.GetStatus().GetState() != ateapipb.WorkerState_WORKER_STATE_ACTIVE && source.GetStatus().GetState() != ateapipb.WorkerState_WORKER_STATE_DRAINING) {
 			return ownershipRefusal(store.OwnershipUnknown)
 		}
 		if _, err := uuid.Parse(source.GetMetadata().GetUid()); err != nil {
@@ -311,7 +338,10 @@ func nativeSnapshotDependency(actor *ateapipb.Actor, target *ateapipb.Worker) er
 		if (op.GetOperation() == "checkpoint-local" && op.GetLocalSnapshotName() == "") || (op.GetOperation() == "checkpoint-external" && op.GetSnapshotUri() == "") {
 			return ownershipRefusal(store.OwnershipUnknown)
 		}
-		if source.GetMetadata().GetName() == target.GetMetadata().GetName() || source.GetNodeName() == target.GetNodeName() {
+		if source.GetMetadata().GetUid() == target.GetMetadata().GetUid() && !sameOwnershipMapping(source, target) || source.GetWorkerPodUid() == target.GetWorkerPodUid() && source.GetNodeName() != target.GetNodeName() {
+			return ownershipRefusal(store.OwnershipMappingChanged)
+		}
+		if source.GetMetadata().GetUid() == target.GetMetadata().GetUid() || source.GetNodeName() == target.GetNodeName() {
 			return ownershipRefusal(store.OwnershipOperationPending)
 		}
 	case "upload-local":
@@ -319,8 +349,13 @@ func nativeSnapshotDependency(actor *ateapipb.Actor, target *ateapipb.Worker) er
 		if op.GetSourceWorker() != nil || op.GetAssignment() != nil || op.GetSnapshotUri() == "" || local.GetSnapshotName() == "" || len(local.GetNodeVmsWithLocalSnapshots()) == 0 || !proto.Equal(local, s.GetLocalSnapshot()) {
 			return ownershipRefusal(store.OwnershipUnknown)
 		}
+		seen := make(map[string]bool)
 		for _, node := range local.GetNodeVmsWithLocalSnapshots() {
-			if node == "" {
+			if seen[node] {
+				return ownershipRefusal(store.OwnershipUnknown)
+			}
+			seen[node] = true
+			if len(validation.IsDNS1123Subdomain(node)) != 0 {
 				return ownershipRefusal(store.OwnershipUnknown)
 			}
 			if node == target.GetNodeName() {
@@ -331,4 +366,12 @@ func nativeSnapshotDependency(actor *ateapipb.Actor, target *ateapipb.Worker) er
 		return ownershipRefusal(store.OwnershipUnknown)
 	}
 	return nil
+}
+
+func qualifiedAssignmentCoordinates(a *ateapipb.WorkerAssignment) bool {
+	if a == nil || a.GetWorker().GetName() == "" || a.GetWorker().GetAtespace() != "" || len(validation.IsDNS1123Label(a.GetWorkerNamespace())) != 0 || len(validation.IsDNS1123Subdomain(a.GetWorkerPool())) != 0 || len(validation.IsDNS1123Subdomain(a.GetWorkerPod())) != 0 || len(validation.IsDNS1123Subdomain(a.GetNodeName())) != 0 || net.ParseIP(a.GetWorkerPodIp()) == nil {
+		return false
+	}
+	_, err := uuid.Parse(a.GetWorkerPodUid())
+	return err == nil
 }

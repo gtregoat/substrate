@@ -50,7 +50,7 @@ func (w *ActorWorkflow) DeleteActor(ctx context.Context, actorRef resources.Acto
 		return nil, status.Error(codes.Aborted, "concurrent update conflict, please retry")
 	}
 
-	if err := requireSettledNativeSnapshot(actor); err != nil {
+	if err := requireSettledNativeOperation(actor); err != nil {
 		return nil, err
 	}
 
@@ -201,15 +201,19 @@ func (w *ActorWorkflow) ensureAteletTerminated(ctx context.Context, actorRef res
 		Spec:                  workloadSpec,
 	}
 
+	actor, err = w.recordNativeOperationOrigin(ctx, actorRef, actor, "terminate", req)
+	if err != nil {
+		return err
+	}
 	if _, err := client.Terminate(ctx, req); err != nil {
 		if status.Code(err) == codes.NotFound {
 			slog.InfoContext(ctx, "workload already terminated on atelet", slog.Any("actor", actorRef))
-			return nil
+			return status.Error(codes.FailedPrecondition, "native termination not found; completion remains unknown")
 		}
 		return fmt.Errorf("while terminating actor on atelet: %w", err)
 	}
 
-	return nil
+	return w.settleNativeTermination(ctx, actorRef, actor)
 }
 
 // ensureVolumesDetachedForDelete detaches external volumes.
@@ -433,7 +437,7 @@ func (w *ActorWorkflow) finalizeDeleted(ctx context.Context, actor *ateapipb.Act
 	ctx, done := stepSpan(ctx, "FinalizeDeleted")
 	defer func() { err = done(err) }()
 
-	if err := requireSettledNativeSnapshot(actor); err != nil {
+	if err := requireSettledNativeOperation(actor); err != nil {
 		return nil, err
 	}
 	actorRef := resources.ActorRefFromActor(actor)
