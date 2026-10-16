@@ -367,6 +367,13 @@ func (w *ActorWorkflow) validateAssignedWorker(ctx context.Context, actorRef res
 		}
 		return nil, fmt.Errorf("failed to get already assigned worker for actor %w", err)
 	}
+	// Protection uncertainty is retryable and must not crash/release the actor.
+	if err := w.workerProtection.verify(ctx, worker); err != nil {
+		return nil, err
+	}
+	if w.workerProtection != nil && (assignment.GetWorkerNamespace() != worker.GetWorkerNamespace() || assignment.GetWorkerPod() != worker.GetWorkerPod() || assignment.GetWorkerPodUid() != worker.GetWorkerPodUid() || assignment.GetWorkerPool() != worker.GetWorkerPool() || assignment.GetNodeName() != worker.GetNodeName() || assignment.GetWorkerPodIp() != worker.GetIp()) {
+		return nil, status.Error(codes.FailedPrecondition, "assigned worker incarnation changed")
+	}
 	if worker.GetStatus().GetState() == ateapipb.WorkerState_WORKER_STATE_DRAINING {
 		slog.InfoContext(ctx, "Assigned worker is draining; crashing actor",
 			slog.String("actor", actorRef.String()),
@@ -514,6 +521,9 @@ func (w *ActorWorkflow) assignWorkerAttempt(ctx context.Context, actorRef resour
 	// answer holds until the bind commits, so nothing here needs a fresh read
 	// and two claims for the last place cannot both be admitted.
 	admit := func(fresh *ateapipb.Worker) error {
+		if err := w.workerProtection.verify(ctx, fresh); err != nil {
+			return err
+		}
 		if !w.scheduler.Applies(fresh, constraints) || !w.scheduler.HasRoom(fresh, constraints) {
 			return errWorkerFilledUp
 		}

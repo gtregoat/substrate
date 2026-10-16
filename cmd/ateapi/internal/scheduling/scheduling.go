@@ -72,6 +72,7 @@ type WorkerSource interface {
 }
 
 type scheduler struct {
+	candidateAdmission func(context.Context, *ateapipb.Worker) error
 	source WorkerSource
 	// intn returns a uniformly distributed random value in [0,n).
 	// Defaults to the global math/rand source
@@ -85,6 +86,13 @@ type Option func(*scheduler)
 // workers. n is always >= 1.
 func WithIntn(intn func(n int) int) Option {
 	return func(s *scheduler) { s.intn = intn }
+}
+
+// WithCandidateAdmission filters placement using a bounded external authority.
+// The allocator must repeat admission under its worker lock; this is only
+// candidate selection and is never durable proof of eligibility.
+func WithCandidateAdmission(admit func(context.Context, *ateapipb.Worker) error) Option {
+	return func(s *scheduler) { s.candidateAdmission = admit }
 }
 
 // New returns a Scheduler placing onto workers reported by source.
@@ -114,7 +122,24 @@ func (s *scheduler) Schedule(ctx context.Context, constraints Constraints) (*ate
 		return nil, ErrNoCapacity
 	}
 
-	return candidates[s.intn(len(candidates))], nil
+	var admissionErr error
+	for len(candidates) > 0 {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		i := s.intn(len(candidates))
+		candidate := candidates[i]
+		if s.candidateAdmission == nil {
+			return candidate, nil
+		}
+		if err := s.candidateAdmission(ctx, candidate); err == nil {
+			return candidate, nil
+		} else {
+			admissionErr = err
+		}
+		candidates = append(candidates[:i], candidates[i+1:]...)
+	}
+	return nil, admissionErr
 }
 
 func (s *scheduler) Applies(worker *ateapipb.Worker, constraints Constraints) bool {

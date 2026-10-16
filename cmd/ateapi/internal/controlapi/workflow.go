@@ -102,6 +102,7 @@ func logActorState(ctx context.Context, actor *ateapipb.Actor, opName, state str
 
 // ActorWorkflow handles the workflows for actor's resume / suspend operations.
 type ActorWorkflow struct {
+	workerProtection     *workerProtection
 	store                actorWorkflowStore
 	workerCache          *workercache.Cache
 	scheduler            scheduling.Scheduler
