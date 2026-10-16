@@ -73,26 +73,38 @@ func (w *ActorWorkflow) DeleteActor(ctx context.Context, actorRef resources.Acto
 		errs = append(errs, fmt.Errorf("while fetching actor template: %w", err))
 	}
 
-	var atletTerminatedErr, volumesDetachedErr error
 	if err := w.ensureAteletTerminated(ctx, actorRef, actor, actorTemplate); err != nil {
-		atletTerminatedErr = fmt.Errorf("while terminating atelet: %w", err)
-		errs = append(errs, atletTerminatedErr)
+		return nil, errors.Join(append(errs, fmt.Errorf("while terminating atelet: %w", err))...)
+	}
+	// Dispatch and settlement may have changed the actor. Never clean up from
+	// the pre-dispatch copy, or after an unavailable settlement read.
+	beforeCleanup := actor
+	actor, err = w.loadActorForDelete(ctx, actorRef)
+	if err != nil {
+		return nil, err
+	}
+	if actor.GetMetadata().GetUid() != beforeCleanup.GetMetadata().GetUid() || actor.GetStatus().GetState() != ateapipb.ActorState_ACTOR_STATE_DELETING {
+		return nil, status.Error(codes.Aborted, "actor identity or deletion state changed before cleanup")
+	}
+	if err := requireSettledNativeOperation(actor); err != nil {
+		return nil, err
+	}
+	if acknowledgedNativeTermination(actor) {
+		// UpdateActor verifies the raw pending envelope before decoding it with
+		// DiscardUnknown. A public read alone cannot waive newer ownership data.
+		actor, err = w.store.UpdateActor(ctx, actorRef, store.PreconditionFrom(actor), func(a *ateapipb.Actor) error {
+			return requireSettledNativeOperation(a)
+		})
+		if err != nil {
+			return nil, err
+		}
 	}
 	if err := w.ensureVolumesDetachedForDelete(ctx, actor, actorTemplate); err != nil {
-		volumesDetachedErr = fmt.Errorf("while detaching volumes: %w", err)
-		errs = append(errs, volumesDetachedErr)
+		return nil, errors.Join(append(errs, fmt.Errorf("while detaching volumes: %w", err))...)
 	}
 
-	// Release worker if atelet termination and volume detachment did not fail.
-	if atletTerminatedErr == nil && volumesDetachedErr == nil {
-		if actor, err = w.ensureWorkerReleased(ctx, actorRef, actor); err != nil {
-			errs = append(errs, fmt.Errorf("while releasing worker: %w", err))
-		}
-	} else {
-		slog.WarnContext(ctx, "skipping releasing worker due to atelet termination or volume detachment failure",
-			slog.Any("actor", actorRef),
-			slog.Any("atletTerminatedErr", atletTerminatedErr),
-			slog.Any("volumesDetachedErr", volumesDetachedErr))
+	if actor, err = w.ensureWorkerReleased(ctx, actorRef, actor); err != nil {
+		return nil, errors.Join(append(errs, fmt.Errorf("while releasing worker: %w", err))...)
 	}
 
 	if err := w.ensureVolumesDeleted(ctx, actor); err != nil {
@@ -128,6 +140,10 @@ func (w *ActorWorkflow) loadActorForDelete(ctx context.Context, actorRef resourc
 func (w *ActorWorkflow) ensureAteletTerminated(ctx context.Context, actorRef resources.ActorRef, actor *ateapipb.Actor, actorTemplate *ateapipb.ActorTemplate) (err error) {
 	ctx, done := stepSpan(ctx, "CallAteletTerminate")
 	defer func() { err = done(err) }()
+
+	if acknowledgedNativeTermination(actor) {
+		return nil
+	}
 
 	assignment := actor.GetStatus().GetWorkerAssignment()
 	if assignment == nil {
