@@ -102,16 +102,17 @@ func TestRecordNativeOperationOrigin_IdentityAndRetry(t *testing.T) {
 
 func TestAcknowledgedTerminationRetainsExactOrigin(t *testing.T) {
 	worker := validWorker(apiWorkerName)
-	worker.Metadata.Uid = "settled-worker"
+	worker.Metadata.Uid = apiWorkerName
+	worker.Metadata.Version = 1
 	assignment := workerAssignmentFrom(worker)
 	actor := &ateapipb.Actor{Status: &ateapipb.ActorStatus{
-		State: ateapipb.ActorState_ACTOR_STATE_DELETING,
+		State:            ateapipb.ActorState_ACTOR_STATE_DELETING,
 		WorkerAssignment: proto.CloneOf(assignment),
 		PendingNativeOperation: &ateapipb.NativeOperationOwnership{
-			Operation: terminatedAcknowledged,
+			Operation:     terminatedAcknowledged,
 			RequestDigest: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-			SourceWorker: worker,
-			Assignment: assignment,
+			SourceWorker:  worker,
+			Assignment:    assignment,
 		},
 	}}
 	if err := requireSettledNativeOperation(actor); err != nil {
@@ -121,6 +122,7 @@ func TestAcknowledgedTerminationRetainsExactOrigin(t *testing.T) {
 		func(a *ateapipb.Actor) { a.Status.PendingNativeOperation.Operation = "terminate" },
 		func(a *ateapipb.Actor) { a.Status.PendingNativeOperation.RequestDigest = "unknown" },
 		func(a *ateapipb.Actor) { a.Status.PendingNativeOperation.SourceWorker.Metadata.Uid = "" },
+		func(a *ateapipb.Actor) { a.Status.PendingNativeOperation.SourceWorker.Metadata.Version = 0 },
 		func(a *ateapipb.Actor) { a.Status.PendingNativeOperation.Assignment.WorkerPodUid = "replaced" },
 		func(a *ateapipb.Actor) { a.Status.WorkerAssignment.NodeName = "another-node" },
 		func(a *ateapipb.Actor) { a.Status.State = ateapipb.ActorState_ACTOR_STATE_RUNNING },

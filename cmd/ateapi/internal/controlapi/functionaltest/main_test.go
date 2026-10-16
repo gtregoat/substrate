@@ -191,6 +191,7 @@ func (f *FakeAteletServer) Reset() {
 	f.FailUpload = nil
 	f.BeforeUpload = nil
 
+	f.TerminateCalls = 0
 	f.TerminateCalled = false
 	f.TerminateRequest = nil
 	f.FailTerminate = nil
