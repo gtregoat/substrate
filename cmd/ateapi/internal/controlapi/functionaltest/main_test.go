@@ -123,6 +123,7 @@ type FakeAteletServer struct {
 	RunCalled  bool
 	RunRequest *ateletpb.RunRequest
 	FailRun    error
+	BeforeRun  func(context.Context, *ateletpb.RunRequest) error
 
 	CheckpointCalled  bool
 	CheckpointRequest *ateletpb.CheckpointRequest
@@ -187,6 +188,7 @@ func (f *FakeAteletServer) Reset() {
 	f.RunCalled = false
 	f.RunRequest = nil
 	f.FailRun = nil
+	f.BeforeRun = nil
 
 	f.CheckpointCalled = false
 	f.CheckpointRequest = nil
@@ -239,6 +241,11 @@ func (f *FakeAteletServer) Run(ctx context.Context, req *ateletpb.RunRequest) (*
 
 	f.RunCalled = true
 	f.RunRequest = proto.Clone(req).(*ateletpb.RunRequest)
+	if f.BeforeRun != nil {
+		if err := f.BeforeRun(ctx, req); err != nil {
+			return nil, err
+		}
+	}
 	if f.FailRun != nil {
 		return nil, f.FailRun
 	}
