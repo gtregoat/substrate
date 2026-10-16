@@ -160,6 +160,11 @@ func acknowledgedNativeTermination(actor *ateapipb.Actor) bool {
 		(s.GetState() != ateapipb.ActorState_ACTOR_STATE_DELETING && s.GetState() != ateapipb.ActorState_ACTOR_STATE_REVERTING && s.GetState() != ateapipb.ActorState_ACTOR_STATE_CRASHED) {
 		return false
 	}
+	if len(op.GetInvocation()) != 0 {
+		if _, err := nativeInvocation(actor); err != nil {
+			return false
+		}
+	}
 	digest, err := hex.DecodeString(op.GetRequestDigest())
 	return err == nil && len(digest) == sha256.Size && op.GetLocalSource() == nil &&
 		op.GetLocalSnapshotName() == s.GetInProgressLocalSnapshotName() && op.GetSnapshotUri() == s.GetInProgressSnapshotUri() &&
@@ -230,27 +235,55 @@ func nativeInvocation(actor *ateapipb.Actor) (*ateletpb.ExecuteOperationRequest,
 	if err := proto.Unmarshal(origin.GetInvocation(), &invocation); err != nil {
 		return nil, err
 	}
-	var request proto.Message
+	var request interface {
+		proto.Message
+		GetActorUid() string
+		GetAtespace() string
+		GetActorName() string
+	}
+	var kind string
 	var actorUID, target string
 	switch r := invocation.GetRequest().(type) {
 	case *ateletpb.ExecuteOperationRequest_Run:
 		request = r.Run
+		kind = "run"
 		actorUID = r.Run.GetActorUid()
 		target = r.Run.GetTargetAteomUid()
 	case *ateletpb.ExecuteOperationRequest_Restore:
 		request = r.Restore
+		kind = "restore"
 		actorUID = r.Restore.GetActorUid()
 		target = r.Restore.GetTargetAteomUid()
 	case *ateletpb.ExecuteOperationRequest_Checkpoint:
 		request = r.Checkpoint
+		switch r.Checkpoint.GetType() {
+		case ateletpb.CheckpointType_CHECKPOINT_TYPE_LOCAL:
+			kind = "checkpoint-local"
+			if r.Checkpoint.GetLocalConfig().GetSnapshotName() != origin.GetLocalSnapshotName() {
+				return nil, status.Error(codes.FailedPrecondition, "local checkpoint publication changed")
+			}
+		case ateletpb.CheckpointType_CHECKPOINT_TYPE_EXTERNAL:
+			kind = "checkpoint-external"
+			if r.Checkpoint.GetExternalConfig().GetSnapshotUri() != origin.GetSnapshotUri() {
+				return nil, status.Error(codes.FailedPrecondition, "external checkpoint publication changed")
+			}
+		}
 		actorUID = r.Checkpoint.GetActorUid()
 		target = r.Checkpoint.GetTargetAteomUid()
 	case *ateletpb.ExecuteOperationRequest_Upload:
 		request = r.Upload
+		kind = "upload-local"
+		if r.Upload.GetLocalSnapshotName() != origin.GetLocalSource().GetSnapshotName() || r.Upload.GetDestinationSnapshotUri() != origin.GetSnapshotUri() {
+			return nil, status.Error(codes.FailedPrecondition, "upload publication changed")
+		}
 		actorUID = r.Upload.GetActorUid()
 		target = invocation.GetWorkerPodUid()
 	case *ateletpb.ExecuteOperationRequest_Terminate:
 		request = r.Terminate
+		kind = "terminate"
+		if origin.GetOperation() == terminatedAcknowledged {
+			kind = terminatedAcknowledged
+		}
 		actorUID = r.Terminate.GetActorUid()
 		target = r.Terminate.GetTargetAteomUid()
 	default:
@@ -265,8 +298,17 @@ func nativeInvocation(actor *ateapipb.Actor) (*ateletpb.ExecuteOperationRequest,
 	if origin.GetOperation() == "upload-local" {
 		source = origin.GetLocalSource().GetSourceWorker()
 	}
-	if actorUID != actor.GetMetadata().GetUid() || invocation.GetOperationId() == "" || invocation.GetWorkerUid() != source.GetMetadata().GetUid() || invocation.GetWorkerPodUid() != source.GetWorkerPodUid() || target != invocation.GetWorkerPodUid() || origin.GetRequestDigest() != hex.EncodeToString(h[:]) {
+	if kind != origin.GetOperation() || request.GetAtespace() != actor.GetMetadata().GetAtespace() || request.GetActorName() != actor.GetMetadata().GetName() || actorUID != actor.GetMetadata().GetUid() || invocation.GetOperationId() == "" || invocation.GetWorkerUid() != source.GetMetadata().GetUid() || invocation.GetWorkerPodUid() != source.GetWorkerPodUid() || target != invocation.GetWorkerPodUid() || origin.GetRequestDigest() != hex.EncodeToString(h[:]) {
 		return nil, status.Error(codes.FailedPrecondition, "persisted native invocation identity mismatch")
+	}
+	if kind != "upload-local" && !proto.Equal(origin.GetAssignment(), workerAssignmentFrom(source)) {
+		return nil, status.Error(codes.FailedPrecondition, "native source mapping changed")
+	}
+	if kind == "upload-local" {
+		nodes := origin.GetLocalSource().GetNodeVmsWithLocalSnapshots()
+		if len(nodes) != 1 || nodes[0] != source.GetNodeName() {
+			return nil, status.Error(codes.FailedPrecondition, "native upload source node mismatch")
+		}
 	}
 	return &invocation, nil
 }
