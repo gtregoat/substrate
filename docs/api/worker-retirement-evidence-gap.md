@@ -1,3 +1,76 @@
+# Current native receipt implementation status
+
+The historical gap analysis below is retained. The `mc-c69471ba` continuation
+adds `ExecuteOperation` / `GetOperation` to AteomHerder, with real generated
+protobuf bindings. Legacy methods and clients keep their wire behavior.
+
+Under the existing default-off worker-protection enforcement path, the producer
+CAS persists the complete invocation (once-minted UUID, actor identity, exact
+worker UID and Pod UID, native request and digest) before dispatch. Local pause
+publication also retains its exact source worker for a later upload. Existing
+snapshots without that identity do not gain invented attribution: an enforced
+upload refuses until a separately supported lifecycle supplies the identity.
+Lookup validates the complete original request and authenticated service-account
+namespace/UID; account recreation does not inherit a predecessor's receipts.
+Successful results must match operation ID and deterministic request SHA-256.
+Unknown fields, missing, unresolved, incompatible and UNIMPLEMENTED results
+cannot settle ownership. There is no legacy fallback after additive dispatch.
+
+Atelet stores acceptance and terminal receipts under
+`/var/lib/ateom-gvisor/operation-receipts`, outside actor/sandbox/checkpoint
+cleanup. Filesystem locks serialize receipt changes across atelet processes;
+atomic rename, file sync and directory sync precede the response. Each request
+is capped at 1 MiB, with at most 65,536 accepted entries (temporary leftovers
+also consume capacity). Capacity exhaustion refuses new acceptance; no receipt
+expires or is evicted, including successful receipts a disconnected producer
+could retry. This is bounded backpressure, not automatic garbage collection.
+
+Success is written only after the actual production native operation returns
+success and required local disposition succeeds. The additive upload path
+requires its local source and performs the upload; it cannot infer success from
+a remote manifest. External checkpoint/upload success requires local snapshot
+pruning. Terminate completes workload termination, unmount, checkpoint pruning
+and actor-directory removal before a successful receipt. Run/Restore success
+retains the running workload; local checkpoint success retains the named local
+snapshot. Lookup never infers these effects from filesystem absence.
+
+The producer can reconcile a durable terminal receipt after lost ACK or a
+failed publication, then continue only the matching lifecycle's existing
+publication/cleanup CAS. It does not redispatch an existing pending operation.
+Native receipt retries themselves do not repeat effects. DeleteActor retains
+its same-call settlement barrier and positive termination acknowledgement
+through later cleanup failure. Finalizers recheck terminal evidence and bind
+publication to the freshly read actor UID and pending envelope.
+
+**Remaining uncertainty:** acceptance followed by effects followed by a crash
+before terminal evidence is not resolved by this journal. Nor does a downstream
+ateom response loss prove its operation failed. These cases retain the exact
+pending ownership and return unresolved, without replay or a success claim.
+This change does not add operation-specific durable ateom result reconciliation
+or phased cleanup recovery for such interrupted effects. The full recovery
+objective therefore remains partial. The native regression injects a terminal
+write interruption after real production Terminate has removed actor data;
+reopening the real journal returns unresolved and refuses redispatch.
+
+Native tests serve the additive contract and compose production Run, Restore,
+local/external Checkpoint, Upload and Terminate with fake external sandbox/OCI/
+object-store boundaries and real receipt files. Producer functional source
+covers real PG workflows, service reconstruction, all six operation kinds,
+lookup outage, lost ACK, publication failure, and gated Resume/Pause/upload
+versus drain/proof. Its native boundary is faked; it does not establish a combined
+real-native-plus-PG run. Compilation and non-CGO tests are supplemental; the
+five mandatory commands, real PG/race execution and other retained acceptance
+requirements remain required and must be reported with actual results.
+
+Consumer retention `3800b186` remains unmerged/undeployed evidence. Enforcement
+stays default-off. Preserve creation protection, existing exact-Pod migration,
+ACTIVE/unknown retention and terminal/local-data node checks before enabling
+producer enforcement/drain. Deployment, preview acceptance, live cleanup and
+release remain owner delivery gates, not sandbox test results. No Goat source,
+provider, CI or rollout configuration changes are made here.
+
+---
+
 # Worker retirement evidence and remaining consumer boundary
 
 The current producer has an exact-incarnation positive branch and retained

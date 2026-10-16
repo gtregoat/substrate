@@ -20,7 +20,10 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"github.com/agent-substrate/substrate/internal/ateattr"
+	"github.com/agent-substrate/substrate/internal/ateompath"
 	"net"
+	"os"
 	"testing"
 
 	"github.com/agent-substrate/substrate/cmd/atelet/internal/operationjournal"
@@ -164,5 +167,35 @@ func (d *receiptLifecycleDriver) checkRecovery(t *testing.T, previous *AteomHerd
 	}
 	if _, err := s.GetOperation(t.Context(), &ateletpb.GetOperationRequest{Operation: d.operations[0]}); status.Code(err) != codes.Unauthenticated {
 		t.Fatalf("unauthenticated lookup: %v", err)
+	}
+}
+
+func TestNativeUploadReceiptSurvivesPruning(t *testing.T) {
+	useTempNodeDirs(t)
+	storage := &recordingObjectStorage{}
+	s := &AteomHerder{gcsClient: storage}
+	d := newReceiptLifecycleDriver(t, s)
+	req := validUploadPausedCheckpointRequest()
+	dir := ateompath.LocalSnapshotDir(req.ActorUid, req.LocalSnapshotName)
+	writeLocalSnapshot(t, dir, sandboxAssetsRecord{SandboxClass: "gvisor", PauseImage: testPauseImage, Scope: ateattr.SnapshotScopeFull, SnapshotFiles: []string{"checkpoint.img"}}, map[string]string{"checkpoint.img": "actual local checkpoint"})
+	if err := d.execute(t.Context(), &ateletpb.ExecuteOperationRequest{Request: &ateletpb.ExecuteOperationRequest_Upload{Upload: req}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Fatalf("uploaded local data not settled: %v", err)
+	}
+	if len(storage.keys()) != 2 {
+		t.Fatalf("actual upload did not commit data and manifest: %v", storage.keys())
+	}
+	d.checkRecovery(t, s)
+	// Another identity with only a remote manifest is not a successful upload.
+	other := proto.CloneOf(d.operations[0])
+	other.OperationId = "another-upload-operation"
+	if _, err := s.ExecuteOperation(receiptPeerContext(t, t.Context(), "api-account-uid"), other); err == nil {
+		t.Fatal("manifest presence fabricated a native receipt")
+	}
+	result, err := s.GetOperation(receiptPeerContext(t, t.Context(), "api-account-uid"), &ateletpb.GetOperationRequest{Operation: other})
+	if err != nil || result.GetState() != ateletpb.OperationState_OPERATION_STATE_UNRESOLVED {
+		t.Fatalf("missing source lost uncertainty: %v %v", result, err)
 	}
 }
