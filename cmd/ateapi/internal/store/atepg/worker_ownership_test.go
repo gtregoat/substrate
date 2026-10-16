@@ -185,6 +185,15 @@ func TestProveEmptyDraining_IdentityAndNameReuse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// A new store instance recovers a lost proof response from durable records.
+	fresh, err := Connect(ctx, containerDSN, "public")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fresh.pool.Close()
+	defer fresh.Close()
+	proof, proofErr := fresh.ProveEmptyDraining(ctx, drained)
+	requireOwnershipProof(t, proof, proofErr, drained)
 	for _, missing := range []func(*ateapipb.Worker){func(w *ateapipb.Worker) { w.Metadata.Uid = "" }, func(w *ateapipb.Worker) { w.Metadata.Version = 0 }, func(w *ateapipb.Worker) { w.Metadata.Version = -1 }} {
 		expected := proto.CloneOf(drained)
 		missing(expected)
