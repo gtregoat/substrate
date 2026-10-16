@@ -80,7 +80,9 @@ func (w *ActorWorkflow) SuspendActor(ctx context.Context, actorRef resources.Act
 		return nil, err
 	}
 	actor = marked
-	if fromPaused {
+	if actor.GetStatus().GetPendingNativeOperation() != nil {
+		err = w.reconcileNative(leaseCtx, actor, "checkpoint-external", "upload-local")
+	} else if fromPaused {
 		wireSnapshotScope, err = w.ensurePausedSnapshotUploaded(leaseCtx, actorRef, actor, actorTemplate)
 	} else {
 		wireSnapshotScope, err = w.ensureAteletSuspended(leaseCtx, actorRef, actor, actorTemplate)
@@ -255,7 +257,10 @@ func (w *ActorWorkflow) ensureAteletSuspended(ctx context.Context, actorRef reso
 		return wireSnapshotScope, err
 	}
 
-	if _, err = client.Checkpoint(ctx, req); err != nil {
+	if err = w.invokeNative(ctx, client, actor, req); err != nil {
+		if len(actor.GetStatus().GetPendingNativeOperation().GetInvocation()) != 0 {
+			return wireSnapshotScope, err
+		}
 		slog.LogAttrs(ctx, slog.LevelError, "Setting Actor to crashed due to error",
 			append(ateattr.ActorRefLogAttrs(actorRef), slog.Any("err", err))...)
 		if cerr := crashActor(ctx, w.store, actorRef, ateattr.OperationSuspend, ateletCrashMessage("Checkpoint", err)); cerr != nil {
@@ -313,7 +318,10 @@ func (w *ActorWorkflow) ensurePausedSnapshotUploaded(ctx context.Context, actorR
 		return wireSnapshotScope, err
 	}
 
-	if _, err = client.UploadPausedCheckpoint(ctx, req); err != nil {
+	if err = w.invokeNative(ctx, client, actor, req); err != nil {
+		if len(actor.GetStatus().GetPendingNativeOperation().GetInvocation()) != 0 {
+			return wireSnapshotScope, err
+		}
 		slog.LogAttrs(ctx, slog.LevelError, "Setting Actor to crashed due to error",
 			append(ateattr.ActorRefLogAttrs(actorRef), slog.Any("err", err))...)
 		if cerr := crashActor(ctx, w.store, actorRef, ateattr.OperationSuspend, ateletCrashMessage("UploadPausedCheckpoint", err)); cerr != nil {

@@ -20,11 +20,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 
 	"github.com/agent-substrate/substrate/cmd/atelet/internal/operationjournal"
-	"github.com/agent-substrate/substrate/internal/ateompath"
 	"github.com/agent-substrate/substrate/internal/proto/ateletpb"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -202,15 +199,7 @@ func (s *AteomHerder) ExecuteOperation(ctx context.Context, req *ateletpb.Execut
 			err = pruneLocalCheckpoints(ctx, r.Checkpoint.GetActorUid())
 		}
 	case *ateletpb.ExecuteOperationRequest_Upload:
-		// Legacy upload can infer success from a manifest alone. This contract
-		// requires this invocation to perform the upload from its actual source.
-		_, err = os.Stat(filepath.Join(ateompath.LocalSnapshotDir(r.Upload.GetActorUid(), r.Upload.GetLocalSnapshotName()), sandboxManifestName))
-		if err == nil {
-			_, err = s.UploadPausedCheckpoint(ctx, r.Upload)
-		}
-		if err == nil {
-			err = pruneLocalCheckpoints(ctx, r.Upload.GetActorUid())
-		}
+		_, err = s.uploadPausedCheckpoint(ctx, r.Upload, true)
 	case *ateletpb.ExecuteOperationRequest_Terminate:
 		_, err = s.Terminate(ctx, r.Terminate)
 	default:

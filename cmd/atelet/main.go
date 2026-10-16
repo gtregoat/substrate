@@ -834,7 +834,11 @@ func (s *AteomHerder) uploadSnapshot(ctx context.Context, uri resources.Snapshot
 // storage. It drives no ateom — the actor's sandbox is gone; the checkpoint
 // files and their self-describing manifest already sit under the actor's
 // local-checkpoints directory, written by an earlier local Checkpoint (pause).
-func (s *AteomHerder) UploadPausedCheckpoint(ctx context.Context, req *ateletpb.UploadPausedCheckpointRequest) (_ *ateletpb.UploadPausedCheckpointResponse, err error) {
+func (s *AteomHerder) UploadPausedCheckpoint(ctx context.Context, req *ateletpb.UploadPausedCheckpointRequest) (*ateletpb.UploadPausedCheckpointResponse, error) {
+	return s.uploadPausedCheckpoint(ctx, req, false)
+}
+
+func (s *AteomHerder) uploadPausedCheckpoint(ctx context.Context, req *ateletpb.UploadPausedCheckpointRequest, strict bool) (_ *ateletpb.UploadPausedCheckpointResponse, err error) {
 	if err := validateUploadPausedCheckpointRequest(req); err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
@@ -862,7 +866,7 @@ func (s *AteomHerder) UploadPausedCheckpoint(ctx context.Context, req *ateletpb.
 	localDir := ateompath.LocalSnapshotDir(req.GetActorUid(), req.GetLocalSnapshotName())
 
 	tPersist := time.Now()
-	sandboxClass, err := s.uploadLocalCheckpointDir(ctx, req, localDir, uri)
+	sandboxClass, err := s.uploadLocalCheckpointDirWithPolicy(ctx, req, localDir, uri, strict)
 	dPersist = time.Since(tPersist)
 	op.sandboxClass = sandboxClass
 	if err != nil {
@@ -872,6 +876,9 @@ func (s *AteomHerder) UploadPausedCheckpoint(ctx context.Context, req *ateletpb.
 	// The uploaded snapshot supersedes every local pause snapshot of this
 	// actor; free the node's disk (best-effort, like Checkpoint).
 	if err := pruneLocalCheckpoints(ctx, req.GetActorUid()); err != nil {
+		if strict {
+			return nil, err
+		}
 		slog.WarnContext(ctx, "failed to prune uploaded local checkpoints", slog.String("actorUID", req.GetActorUid()), slog.Any("err", err))
 	}
 
@@ -883,6 +890,10 @@ func (s *AteomHerder) UploadPausedCheckpoint(ctx context.Context, req *ateletpb.
 // returns the sandbox class recorded in the snapshot manifest (empty when the
 // manifest was not read). Parameterized by localDir for tests.
 func (s *AteomHerder) uploadLocalCheckpointDir(ctx context.Context, req *ateletpb.UploadPausedCheckpointRequest, localDir string, uri resources.SnapshotURI) (string, error) {
+	return s.uploadLocalCheckpointDirWithPolicy(ctx, req, localDir, uri, false)
+}
+
+func (s *AteomHerder) uploadLocalCheckpointDirWithPolicy(ctx context.Context, req *ateletpb.UploadPausedCheckpointRequest, localDir string, uri resources.SnapshotURI, strict bool) (string, error) {
 	manifestURI, err := uri.ObjectURI(sandboxManifestName)
 	if err != nil {
 		return "", fmt.Errorf("while addressing snapshot manifest in GCS: %w", err)
@@ -890,6 +901,9 @@ func (s *AteomHerder) uploadLocalCheckpointDir(ctx context.Context, req *ateletp
 
 	manifest, err := os.ReadFile(filepath.Join(localDir, sandboxManifestName))
 	if errors.Is(err, os.ErrNotExist) {
+		if strict {
+			return "", fmt.Errorf("exact native upload source unavailable: %w", err)
+		}
 		// The local snapshot is gone. A previous invocation may have uploaded
 		// and pruned it: the remote manifest is uploaded last, so its presence
 		// means the whole snapshot is committed and this retry already
